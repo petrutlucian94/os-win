@@ -423,7 +423,7 @@ class VMUtils(object):
         self._jobutils.add_virt_resource(scsicontrl, vm)
 
     def attach_volume_to_controller(self, vm_name, controller_path, address,
-                                    mounted_disk_path):
+                                    mounted_disk_path, serial=None):
         """Attach a volume to a controller."""
 
         vm = self._lookup_vm_check(vm_name)
@@ -435,7 +435,13 @@ class VMUtils(object):
         diskdrive.Parent = controller_path
         diskdrive.HostResource = [mounted_disk_path]
 
-        self._jobutils.add_virt_resource(diskdrive, vm)
+        diskdrive_path = self._jobutils.add_virt_resource(diskdrive, vm)
+
+        if serial:
+            # Apparently this can't be set when the resource is added.
+            diskdrive = wmi.WMI(moniker=diskdrive_path)
+            diskdrive.ElementName = serial
+            self._jobutils.modify_virt_resource(diskdrive)
 
     def _get_disk_resource_address(self, disk_resource):
         return disk_resource.AddressOnParent
@@ -542,6 +548,10 @@ class VMUtils(object):
                 [c for c in self._get_disk_resource_disk_path(disk_resource)])
 
         return (disk_files, volume_drives)
+
+    def get_vm_disks(self, vm_name):
+        vm = self._lookup_vm_check(vm_name)
+        return self._get_vm_disks(vm)
 
     def _get_vm_disks(self, vm):
         vmsettings = vm.associators(
