@@ -75,6 +75,10 @@ class VHDWin32APIException(VHDException, Win32Exception):
     pass
 
 
+class FCWin32Exception(Win32Exception):
+    pass
+
+
 class WMIException(OSWinException):
     def __init__(self, message=None, wmi_exc=None):
         if wmi_exc:
