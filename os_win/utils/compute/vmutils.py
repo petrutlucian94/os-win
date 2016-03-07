@@ -44,6 +44,8 @@ from os_win.utils import _wqlutils
 from os_win.utils import baseutils
 from os_win.utils import jobutils
 from os_win.utils import pathutils
+from os_win.utils.storage import diskutils
+from os_win.utils.storage.virtdisk import vhdutils
 
 CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
@@ -129,6 +131,8 @@ class VMUtils(baseutils.BaseUtilsVirt):
         super(VMUtils, self).__init__(host)
         self._jobutils = jobutils.JobUtils()
         self._pathutils = pathutils.PathUtils()
+        self._diskutils = diskutils.DiskUtils()
+        self._vhdutils = vhdutils.VHDUtils()
         self._enabled_states_map = {v: k for k, v in
                                     six.iteritems(self._vm_power_states_map)}
 
@@ -353,31 +357,46 @@ class VMUtils(baseutils.BaseUtilsVirt):
             SystemSettings=vmsetting.GetText_(1))
         self._jobutils.check_ret_val(ret_val, job_path)
 
-    def get_vm_scsi_controller(self, vm_name):
-        vmsettings = self._lookup_vm_check(vm_name)
-        return self._get_vm_scsi_controller(vmsettings)
+    def _get_vm_disk_ctrl(self, vmsettings, ctrller_addr, disk_bus):
+        if disk_bus == constants.CTRL_TYPE_IDE:
+            res_sub_type = self._IDE_CTRL_RES_SUB_TYPE
+        elif disk_bus == constants.CTRL_TYPE_SCSI:
+            res_sub_type = self._SCSI_CTRL_RES_SUB_TYPE
+        else:
+            err_msg = _("Unknown disk bus: %s")
+            raise exceptions.HyperVException(err_msg % disk_bus)
 
-    def _get_vm_scsi_controller(self, vmsettings):
         rasds = _wqlutils.get_element_associated_class(
             self._conn, self._RESOURCE_ALLOC_SETTING_DATA_CLASS,
             element_instance_id=vmsettings.InstanceID)
-        res = [r for r in rasds
-               if r.ResourceSubType == self._SCSI_CTRL_RES_SUB_TYPE][0]
-        return res.path_()
 
-    def _get_vm_ide_controller(self, vmsettings, ctrller_addr):
-        rasds = _wqlutils.get_element_associated_class(
-            self._conn, self._RESOURCE_ALLOC_SETTING_DATA_CLASS,
-            element_instance_id=vmsettings.InstanceID)
-        ide_ctrls = [r for r in rasds
-                     if r.ResourceSubType == self._IDE_CTRL_RES_SUB_TYPE
-                     and r.Address == str(ctrller_addr)]
+        # The powershell commandlets rely on controller index. As SCSI
+        # controllers are missing the 'Address' attribute, we'll do the
+        # same, for consistency reasons.
+        ctrls = [r for r in rasds
+                 if r.ResourceSubType == res_sub_type]
+        ctrl = ctrls[ctrller_addr] if len(ctrls) > ctrller_addr else None
 
-        return ide_ctrls[0].path_() if ide_ctrls else None
+        if not ctrl:
+            err_msg = _("Could not find disk controller %(ctrller_addr)s "
+                        "on disk bus: %(disk_bus)s.")
+            raise exceptions.HyperVException(
+                err_msg % dict(ctrller_addr=ctrller_addr,
+                               disk_bus=disk_bus))
+
+        return ctrl.path_()
 
     def get_vm_ide_controller(self, vm_name, ctrller_addr):
+        # TODO(lpetrut) remove those methods once Nova stops using them,
+        # as we should not expose disk controller paths.
         vmsettings = self._lookup_vm_check(vm_name)
-        return self._get_vm_ide_controller(vmsettings, ctrller_addr)
+        return self._get_vm_disk_ctrl(vmsettings, ctrller_addr,
+                                      disk_bus=constants.CTRL_TYPE_IDE)
+
+    def get_vm_scsi_controller(self, vm_name):
+        vmsettings = self._lookup_vm_check(vm_name)
+        return self._get_vm_disk_ctrl(vmsettings, ctrller_addr=0,
+                                      disk_bus=constants.CTRL_TYPE_SCSI)
 
     def get_attached_disks(self, scsi_controller_path):
         volumes = self._conn.query(
@@ -413,24 +432,68 @@ class VMUtils(baseutils.BaseUtilsVirt):
                                        "res_sub_type": resource_sub_type})[0]
         return obj
 
-    def attach_scsi_drive(self, vm_name, path, drive_type=constants.DISK):
+    def attach_vm_disk(self, vm_name, path,
+                       disk_bus=constants.CTRL_TYPE_IDE,
+                       ctrller_addr=0, drive_addr=None,
+                       drive_type=constants.DISK,
+                       serial=None):
         vmsettings = self._lookup_vm_check(vm_name)
-        ctrller_path = self._get_vm_scsi_controller(vmsettings)
-        drive_addr = self.get_free_controller_slot(ctrller_path)
-        self.attach_drive(vm_name, path, ctrller_path, drive_addr, drive_type)
 
-    def attach_ide_drive(self, vm_name, path, ctrller_addr, drive_addr,
-                         drive_type=constants.DISK):
-        vmsettings = self._lookup_vm_check(vm_name)
-        ctrller_path = self._get_vm_ide_controller(vmsettings, ctrller_addr)
-        self.attach_drive(vm_name, path, ctrller_path, drive_addr, drive_type)
+        ctrller_path = self._get_vm_disk_ctrl(vmsettings,
+                                              ctrller_addr,
+                                              disk_bus)
+        if drive_addr is None:
+            drive_addr = self._get_free_disk_ctrl_slot(ctrller_path,
+                                                       disk_bus)
 
-    def attach_drive(self, vm_name, path, ctrller_path, drive_addr,
-                     drive_type=constants.DISK):
-        """Create a drive and attach it to the vm."""
+        is_physical = self._is_drive_physical(path)
+        if is_physical:
+            if drive_type != constants.DISK:
+                raise exceptionsc.HyperVException(
+                    _("Physical disks can be attached only "
+                      "as disk drives. Requested drive type: %s") %
+                    drive_type)
+            self._diskutils.validate_phys_disk(path)
+            self._attach_phys_disk(vmsettings, path, ctrller_path,
+                                   drive_addr, serial)
+        else:
+            self._vhdutils.validate_vhd(path)
+            self._attach_disk_image(vmsettings, path, ctrller_path,
+                                    drive_addr, drive_type, serial)
 
-        vm = self._lookup_vm_check(vm_name, as_vssd=False)
+    def _attach_phys_disk(self, vmsettings, path, ctrller_path, drive_addr,
+                          serial):
+        mounted_disk_path = self._get_mounted_disk_path_by_dev_name(path)
 
+        diskdrive = self._get_new_resource_setting_data(
+            self._PHYS_DISK_RES_SUB_TYPE)
+
+        diskdrive.AddressOnParent = drive_addr
+        diskdrive.Parent = ctrller_path
+        diskdrive.HostResource = [mounted_disk_path]
+
+        diskdrive_path = self._jobutils.add_virt_resource(diskdrive,
+                                                          vmsettings)[0]
+
+        if serial:
+            # Apparently this can't be set when the resource is added.
+            diskdrive = self._get_wmi_obj(diskdrive_path)
+            diskdrive.ElementName = serial
+            self._jobutils.modify_virt_resource(diskdrive)
+
+    def _get_mounted_disk_path_by_dev_name(self, device_name):
+        device_number = self._diskutils.get_device_number_from_device_name(
+            device_name)
+        mounted_disk_path = self.get_mounted_disk_by_drive_number(
+            device_number)
+        if not mounted_disk_path:
+            err_msg = _("Could not find the mounted disk "
+                        "drive for device %s.")
+            raise exceptions.HyperVException(err_msg % device_name)
+        return mounted_disk_path
+
+    def _attach_disk_image(self, vmsettings, path, ctrller_path, drive_addr,
+                           drive_type, serial):
         if drive_type == constants.DISK:
             res_sub_type = self._DISK_DRIVE_RES_SUB_TYPE
         elif drive_type == constants.DVD:
@@ -443,8 +506,13 @@ class VMUtils(baseutils.BaseUtilsVirt):
         drive.Address = drive_addr
         drive.AddressOnParent = drive_addr
         # Add the cloned disk drive object to the vm.
-        new_resources = self._jobutils.add_virt_resource(drive, vm)
+        new_resources = self._jobutils.add_virt_resource(drive, vmsettings)
         drive_path = new_resources[0]
+
+        if serial:
+            drive = self._get_wmi_obj(drive_path)
+            drive.ElementName = serial
+            self._jobutils.modify_virt_resource(drive)
 
         if drive_type == constants.DISK:
             res_sub_type = self._HARD_DISK_RES_SUB_TYPE
@@ -457,23 +525,40 @@ class VMUtils(baseutils.BaseUtilsVirt):
         res.Parent = drive_path
         res.HostResource = [path]
 
-        # Add the new vhd object as a virtual hard disk to the vm.
-        self._jobutils.add_virt_resource(res, vm)
+        try:
+            # Add the new vhd object as a virtual hard disk to the vm.
+            self._jobutils.add_virt_resource(res, vmsettings)
+        except Exception:
+            self._jobutils.remove_virt_resource(drive)
+            raise
 
-    def create_scsi_controller(self, vm_name):
-        """Create an iscsi controller ready to mount volumes."""
+    def attach_scsi_drive(self, vm_name, path, drive_type=constants.DISK):
+        # TODO(lpetrut): Remove this when Nova starts using the new method.
+        ctrller_path = self.get_vm_scsi_controller(vm_name)
+        drive_addr = self.get_free_controller_slot(ctrller_path)
+        self.attach_drive(vm_name, path, ctrller_path, drive_addr, drive_type)
 
-        vmsettings = self._lookup_vm_check(vm_name)
-        scsicontrl = self._get_new_resource_setting_data(
-            self._SCSI_CTRL_RES_SUB_TYPE)
+    def attach_ide_drive(self, vm_name, path, ctrller_addr, drive_addr,
+                         drive_type=constants.DISK):
+        # TODO(lpetrut): Remove this when Nova starts using the new method.
+        ctrller_path = self.get_vm_ide_controller(vm_name, ctrller_addr)
+        self.attach_drive(vm_name, path, ctrller_path, drive_addr, drive_type)
 
-        scsicontrl.VirtualSystemIdentifiers = ['{' + str(uuid.uuid4()) + '}']
-        self._jobutils.add_virt_resource(scsicontrl, vmsettings)
+    def attach_drive(self, vm_name, path, ctrller_path, drive_addr,
+                     drive_type=constants.DISK):
+        """Create a drive and attach it to the vm."""
+        # TODO(lpetrut): Remove this when Nova starts using the new method.
+
+        vm = self._lookup_vm_check(vm_name, as_vssd=False)
+
+        self._attach_disk_image(vm, path, ctrller_path, drive_addr,
+                                drive_type, serial=None)
 
     def attach_volume_to_controller(self, vm_name, controller_path, address,
                                     mounted_disk_path, serial=None):
         """Attach a volume to a controller."""
 
+        # TODO(lpetrut): Remove this when Nova starts using the new method.
         vmsettings = self._lookup_vm_check(vm_name)
 
         diskdrive = self._get_new_resource_setting_data(
@@ -491,6 +576,16 @@ class VMUtils(baseutils.BaseUtilsVirt):
             diskdrive = self._get_wmi_obj(diskdrive_path, True)
             diskdrive.ElementName = serial
             self._jobutils.modify_virt_resource(diskdrive)
+
+    def create_scsi_controller(self, vm_name):
+        """Create an iscsi controller ready to mount volumes."""
+
+        vmsettings = self._lookup_vm_check(vm_name)
+        scsicontrl = self._get_new_resource_setting_data(
+            self._SCSI_CTRL_RES_SUB_TYPE)
+
+        scsicontrl.VirtualSystemIdentifiers = ['{' + str(uuid.uuid4()) + '}']
+        self._jobutils.add_virt_resource(scsicontrl, vmsettings)
 
     def get_vm_physical_disk_mapping(self, vm_name):
         mapping = {}
@@ -669,7 +764,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
     def get_vm_dvd_disk_paths(self, vm_name):
         vmsettings = self._lookup_vm_check(vm_name)
 
-        sasds = _wqlutils.get_element_associated_class(
+        sasds = _wqlutils.get_element_assoc863iated_class(
             self._conn, self._STORAGE_ALLOC_SETTING_DATA_CLASS,
             element_instance_id=vmsettings.InstanceID)
 
@@ -678,21 +773,34 @@ class VMUtils(baseutils.BaseUtilsVirt):
 
         return dvd_paths
 
-    def is_disk_attached(self, disk_path, is_physical=True):
+    def is_disk_attached(self, disk_path, is_physical=None):
+        # TODO(lpetrut): remove the is_physical argument.
+        if is_physical is None:
+            is_physical = self._is_drive_physical(disk_path)
+
         disk_resource = self._get_mounted_disk_resource_from_path(disk_path,
                                                                   is_physical)
         return disk_resource is not None
 
-    def detach_vm_disk(self, vm_name, disk_path, is_physical=True):
+    def detach_vm_disk(self, vm_name, disk_path, is_physical=None,
+                       serial=None):
         # TODO(claudiub): remove vm_name argument, no longer used.
-        disk_resource = self._get_mounted_disk_resource_from_path(disk_path,
-                                                                  is_physical)
+        # NOTE(lpetrut): At the moment, for physical disks, Nova passes the
+        # Msvm_DiskDrive resource path. In the future, we expect it to pass
+        # the phyisical disk path. The is_physical argument will be removed.
+        if is_physical is None:
+            is_physical = self._is_drive_physical(disk_path)
+
+        if is_physical and 'Msvm_DiskDrive' not in disk_path:
+            disk_res_path = self._get_mounted_disk_path_by_dev_name(disk_path)
+        else:
+            disk_res_path = disk_path
+
+        disk_resource = self._get_mounted_disk_resource_from_path(
+            disk_res_path, is_physical)
 
         if disk_resource:
-            parent = self._conn.query("SELECT * FROM "
-                                      "Msvm_ResourceAllocationSettingData "
-                                      "WHERE __PATH = '%s'" %
-                                      disk_resource.Parent)[0]
+            parent = wmi.WMI(moniker=disk_resource.Parent)
 
             self._jobutils.remove_virt_resource(disk_resource)
             if not is_physical:
@@ -743,15 +851,40 @@ class VMUtils(baseutils.BaseUtilsVirt):
                 disk_data[disk.path().RelPath] = disk.HostResource[0]
         return disk_data
 
-    def get_free_controller_slot(self, scsi_controller_path):
-        attached_disks = self.get_attached_disks(scsi_controller_path)
-        used_slots = [int(disk.AddressOnParent) for disk in attached_disks]
+    def _get_disk_ctrl_type(self, controller_path):
+        ctrl = wmi.WMI(moniker=controller_path)
+        if ctrl.ResourceSubType == self._SCSI_CTRL_RES_SUB_TYPE:
+            return constants.CTRL_TYPE_SCSI
+        elif ctrl.ResourceSubType == self._IDE_CTRL_RES_SUB_TYPE:
+            return constants.CTRL_TYPE_IDE
 
-        for slot in range(constants.SCSI_CONTROLLER_SLOTS_NUMBER):
+    def _get_free_disk_ctrl_slot(self, controller_path, disk_bus):
+        attached_disks = self.get_attached_disks(controller_path)
+        used_slots = [int(disk.AddressOnParent) for disk in attached_disks]
+        slots_number = constants.DISK_CONTROLLER_SLOTS_NUMBER[disk_bus]
+
+        for slot in range(slots_number):
             if slot not in used_slots:
                 return slot
+
+        err_msg = _("Exceeded the maximum number of slots (%(slots_number)s) "
+                    "for disk bus %(disk_bus)s.")
         raise exceptions.HyperVException(
-            _("Exceeded the maximum number of slots"))
+            err_msg % dict(slots_number=slots_number,
+                           disk_bus=disk_bus))
+
+    def get_free_disk_ctrl_slot(self, vm_name, ctrller_addr, disk_bus):
+        vmsettings = self._lookup_vm_check(vm_name)
+        controller_path = self._get_vm_disk_ctrl(vmsettings,
+                                                 ctrller_addr,
+                                                 disk_bus)
+        return self._get_free_disk_ctrl_slot(controller_path, disk_bus)
+
+    def get_free_controller_slot(self, controller_path):
+        # TODO(lpetrut): this method will be removed. It was used by Nova only
+        # for SCSI controllers.
+        return self._get_free_disk_ctrl_slot(
+            controller_path, disk_bus=constants.CTRL_TYPE_SCSI)
 
     def get_vm_serial_port_connection(self, vm_name, update_connection=None):
         # TODO(lpetrut): Remove this method after the patch implementing
@@ -956,9 +1089,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
         self._jobutils.modify_virt_resource(disk_resource)
 
     def _is_drive_physical(self, drive_path):
-        # TODO(atuvenie): Find better way to check if path represents
-        # physical or virtual drive.
-        return not self._pathutils.exists(drive_path)
+        return self._diskutils.is_phys_disk_path(drive_path)
 
     def _drive_to_boot_source(self, drive_path):
         is_physical = self._is_drive_physical(drive_path)

@@ -52,6 +52,12 @@ class VHDUtils(object):
     def __init__(self):
         self._win32_utils = win32utils.Win32Utils()
 
+        self._iso_info_members = {
+            vdisk_const.GET_VIRTUAL_DISK_INFO_SIZE: 'Size',
+            vdisk_const.GET_VIRTUAL_DISK_INFO_VIRTUAL_STORAGE_TYPE:
+                'VirtualStorageType',
+        }
+
         self._vhd_info_members = {
             vdisk_const.GET_VIRTUAL_DISK_INFO_SIZE: 'Size',
             vdisk_const.GET_VIRTUAL_DISK_INFO_PARENT_LOCATION:
@@ -81,8 +87,9 @@ class VHDUtils(object):
     def _open(self, vhd_path,
               open_flag=None,
               open_access_mask=vdisk_const.VIRTUAL_DISK_ACCESS_ALL,
-              open_params=None):
-        device_id = self._get_vhd_device_id(vhd_path)
+              open_params=None,
+              device_id=None):
+        device_id = device_id or self._get_vhd_device_id(vhd_path)
 
         vst = vdisk_struct.Win32_VIRTUAL_STORAGE_TYPE(DeviceId=device_id)
         handle = wintypes.HANDLE()
@@ -173,6 +180,12 @@ class VHDUtils(object):
                 if f.read(8) == vdisk_const.VHD_SIGNATURE:
                     return constants.DISK_FORMAT_VHD
 
+            if file_size >= vdisk_const.ISO_SIGNATURE_OFFSET:
+                f.seek(vdisk_const.ISO_SIGNATURE_OFFSET)
+                if (f.read(len(vdisk_const.ISO_SIGNATURE)) ==
+                       vdisk_const.ISO_SIGNATURE):
+                    return constants.DISK_FORMAT_ISO
+
     def get_vhd_info(self, vhd_path, info_members=None):
         """Returns a dict containing VHD image informations.
 
@@ -194,7 +207,13 @@ class VHDUtils(object):
                 - ProviderSubtype
         """
         vhd_info = {}
-        info_members = info_members or self._vhd_info_members
+
+        device_id = self._get_vhd_device_id(vhd_path)
+        if not info_members:
+            info_members = (
+                self._iso_info_members
+                if device_id == vdisk_const.VIRTUAL_STORAGE_TYPE_DEVICE_ISO
+                else self._vhd_info_members)
 
         open_access_mask = (vdisk_const.VIRTUAL_DISK_ACCESS_GET_INFO |
                             vdisk_const.VIRTUAL_DISK_ACCESS_DETACH)
@@ -493,3 +512,18 @@ class VHDUtils(object):
 
         os.unlink(vhd_path)
         os.rename(tmp_path, vhd_path)
+
+    def validate_vhd(self, vhd_path):
+        handle = None
+        try:
+            open_access_mask = (vdisk_const.VIRTUAL_DISK_ACCESS_GET_INFO |
+                                vdisk_const.VIRTUAL_DISK_ACCESS_DETACH)
+            handle = self._open(vhd_path, open_access_mask=open_access_mask)
+        except Exception as exc:
+            err_msg = _("Could not validate virtual disk "
+                        "image %(vhd_path)s. Exception: %(exc)s")
+            raise exceptions.DiskValidationError(
+                err_msg % dict(vhd_path=vhd_path, exc=exc))
+        finally:
+            if handle:
+                self._close(handle)

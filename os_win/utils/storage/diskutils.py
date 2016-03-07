@@ -35,13 +35,16 @@ LOG = logging.getLogger(__name__)
 class DiskUtils(baseutils.BaseUtils):
 
     _wmi_namespace = 'root/microsoft/windows/storage'
+    _cimv2_namespace = 'root/cimv2'
 
     def __init__(self):
         self._conn_storage = self._get_wmi_conn(self._wmi_namespace)
+        self._conn_cimv2 = self._get_wmi_conn(self._cimv2_namespace)
         self._win32_utils = win32utils.Win32Utils()
 
         # Physical device names look like \\.\PHYSICALDRIVE1
-        self._phys_dev_name_regex = re.compile(r'\\\\.*\\[a-zA-Z]*([\d]+)')
+        self._phys_dev_name_regex = re.compile(
+            r'\\\\\.\\PHYSICALDRIVE([\d]+)', re.IGNORECASE)
 
     def _get_disk(self, disk_number):
         disk = self._conn_storage.Msft_Disk(Number=disk_number)
@@ -97,3 +100,15 @@ class DiskUtils(baseutils.BaseUtils):
                 return 0, 0
             else:
                 raise exc
+
+    def is_phys_disk_path(self, path):
+        return bool(self._phys_dev_name_regex.match(path))
+
+    def validate_phys_disk(self, path):
+        if not self.is_phys_disk_path(path):
+            raise exceptions.DiskValidationError(
+                _("%s is not a valid physical device path") % path)
+
+        if not self._conn_cimv2.Win32_DiskDrive(DeviceID=path):
+            raise exceptions.DiskValidationError(
+                _("Physical disk %s was not found.") % path)

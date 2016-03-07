@@ -134,6 +134,10 @@ class DiskNotFound(NotFound):
     pass
 
 
+class DiskValidationError(OSWinException):
+    pass
+
+
 class HyperVRemoteFXException(HyperVException):
     pass
 
