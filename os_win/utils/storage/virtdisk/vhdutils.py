@@ -473,6 +473,16 @@ class VHDUtils(object):
         metadata_size = struct.unpack('<I', vhdx_file.read(4))[0]
         return metadata_size, metadata_offset
 
+    def _get_vhdx_block_size(self, vhdx_file):
+        metadata_offset = self._get_vhdx_metadata_size_and_offset(vhdx_file)[1]
+        offset = metadata_offset + vdisk_const.VHDX_BS_METADATA_ENTRY_OFFSET
+        vhdx_file.seek(offset)
+        file_parameter_offset = struct.unpack('<I', vhdx_file.read(4))[0]
+
+        vhdx_file.seek(file_parameter_offset + metadata_offset)
+        block_size = struct.unpack('<I', vhdx_file.read(4))[0]
+        return block_size
+
     def get_best_supported_vhd_format(self):
         return constants.DISK_FORMAT_VHDX
 

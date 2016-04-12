@@ -695,6 +695,18 @@ class VHDUtilsTestCase(base.BaseTestCase):
         self.assertEqual(1, md_sz)
         self.assertEqual(1, md_offset)
 
+    @mock.patch.object(vhdutils.VHDUtils,
+                       '_get_vhdx_metadata_size_and_offset')
+    def test_get_block_size(self, mock_get_md_sz_and_offset):
+        mock_get_md_sz_and_offset.return_value = (mock.sentinel.md_sz, 1024)
+        fake_block_size = bytearray(b'\x01\x00\x00\x00')
+        fake_offset = bytearray(b'\x02\x00\x00\x00')
+        mock_handle = self._get_mock_file_handle(fake_offset,
+                                                 fake_block_size)
+
+        block_size = self._vhdutils._get_vhdx_block_size(mock_handle)
+        self.assertEqual(block_size, 1)
+
     @mock.patch.object(vhdutils.VHDUtils, 'convert_vhd')
     @mock.patch.object(os, 'unlink')
     @mock.patch.object(os, 'rename')
