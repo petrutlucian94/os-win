@@ -619,10 +619,12 @@ class VHDUtilsTestCase(base.BaseTestCase):
         expected_vhd_size = root_vhd_size - expected_md_size
         self.assertEqual(expected_vhd_size, real_size)
 
+    @mock.patch.object(vhdutils.VHDUtils, '_get_vhdx_block_size')
     @mock.patch.object(vhdutils.VHDUtils, '_get_vhdx_log_size')
     @mock.patch.object(vhdutils.VHDUtils, '_get_vhdx_metadata_size_and_offset')
     def test_get_vhdx_internal_size(self, mock_get_vhdx_md_sz_and_off,
-                                    mock_get_vhdx_log_sz):
+                                    mock_get_vhdx_log_sz,
+                                    mock_get_vhdx_block_size):
         self._mock_open()
         fake_log_sz = 1 << 20
         fake_block_sz = 32 << 20
@@ -632,9 +634,9 @@ class VHDUtilsTestCase(base.BaseTestCase):
         # We expect less than a block to be reserved for internal metadata.
         expected_max_int_sz = new_vhd_sz - fake_block_sz
 
-        fake_vhd_info = dict(SectorSize=fake_logical_sector_sz,
-                             BlockSize=fake_block_sz)
+        fake_vhd_info = dict(SectorSize=fake_logical_sector_sz)
 
+        mock_get_vhdx_block_size.return_value = fake_block_sz
         mock_get_vhdx_log_sz.return_value = fake_log_sz
         mock_get_vhdx_md_sz_and_off.return_value = fake_md_sz, None
 

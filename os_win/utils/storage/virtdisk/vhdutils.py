@@ -431,7 +431,7 @@ class VHDUtils(object):
                 bes = vdisk_const.VHDX_BAT_ENTRY_SIZE
 
                 lss = vhd_info['SectorSize']
-                bs = vhd_info['BlockSize']
+                bs = self._get_vhdx_block_size(f)
                 ls = self._get_vhdx_log_size(f)
                 ms = self._get_vhdx_metadata_size_and_offset(f)[0]
 

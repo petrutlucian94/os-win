@@ -20,6 +20,7 @@ Based on the "root/virtualization/v2" namespace available starting with
 Hyper-V Server / Windows Server 2012.
 """
 
+import functools
 import sys
 import time
 import uuid
@@ -27,6 +28,8 @@ import uuid
 if sys.platform == 'win32':
     import wmi
 
+from eventlet import patcher
+from eventlet import tpool
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import uuidutils
@@ -135,9 +138,11 @@ class VMUtils(baseutils.BaseUtilsVirt):
         for vs in self._conn.Msvm_VirtualSystemSettingData(
                 ['ElementName', 'Notes'],
                 VirtualSystemType=self._VIRTUAL_SYSTEM_TYPE_REALIZED):
-            if vs.Notes is not None:
+            vs_notes = vs.Notes
+            vs_name = vs.ElementName
+            if vs_notes is not None and vs_name:
                 instance_notes.append(
-                    (vs.ElementName, [v for v in vs.Notes if v]))
+                    (vs_name, [v for v in vs_notes if v]))
 
         return instance_notes
 
@@ -815,11 +820,22 @@ class VMUtils(baseutils.BaseUtilsVirt):
                                                             fields=[field])
 
         def _handle_events(callback):
+            if patcher.is_monkey_patched('thread'):
+                # Retrieve one by one all the events that occurred in
+                # the checked interval.
+                #
+                # We use eventlet.tpool for retrieving the events in
+                # order to avoid issues caused by greenthread/thread
+                # communication. Note that PyMI must use the unpatched
+                # threading module.
+                listen = functools.partial(tpool.execute, listener,
+                                           event_timeout)
+            else:
+                listen = functools.partial(listener, event_timeout)
+
             while True:
                 try:
-                    # Retrieve one by one all the events that occurred in
-                    # the checked interval.
-                    event = listener(event_timeout)
+                    event = listen()
 
                     vm_name = event.ElementName
                     vm_state = event.EnabledState
@@ -874,7 +890,8 @@ class VMUtils(baseutils.BaseUtilsVirt):
 
     def _get_instance_notes(self, vm_name):
         vmsettings = self._lookup_vm_check(vm_name)
-        return [note for note in vmsettings.Notes if note]
+        vm_notes = vmsettings.Notes or []
+        return [note for note in vm_notes if note]
 
     def get_instance_uuid(self, vm_name):
         instance_notes = self._get_instance_notes(vm_name)
