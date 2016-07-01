@@ -89,7 +89,7 @@ def get_wrapped_function(function):
     return _get_wrapped_function(function)
 
 
-def retry_decorator(max_retry_count=5, inc_sleep_time=1,
+def retry_decorator(max_retry_count=5, timeout=None, inc_sleep_time=1,
                     max_sleep_time=1, exceptions=(), error_codes=()):
     if isinstance(error_codes, six.integer_types):
         error_codes = (error_codes, )
@@ -98,6 +98,8 @@ def retry_decorator(max_retry_count=5, inc_sleep_time=1,
         def inner(*args, **kwargs):
             try_count = 0
             sleep_time = 0
+            time_start = time.time()
+            time_left = timeout or 0
 
             while True:
                 try:
@@ -107,25 +109,42 @@ def retry_decorator(max_retry_count=5, inc_sleep_time=1,
                         err_code = getattr(exc, 'error_code', None)
                         expected_err_code = (err_code in error_codes
                                              or not error_codes)
-                        should_retry = (expected_err_code
-                                        and try_count < max_retry_count)
+
+                        time_elapsed = time.time() - time_start
+                        time_left = (timeout - time_elapsed
+                                     if timeout else 'undefined')
+                        tries_left = (max_retry_count - try_count
+                                      if max_retry_count is not None
+                                      else 'undefined')
+
+                        should_retry = (
+                            expected_err_code
+                            and tries_left
+                            and (time_left == 'undefined'
+                                 or time_left > 0))
                         ctxt.reraise = not should_retry
 
                         if should_retry:
                             try_count += 1
                             func_name = reflection.get_callable_name(f)
-                            LOG.debug("Got expected exception %(exc)s while "
-                                      "calling function %(func_name)s. "
-                                      "Retries left: %(retries_left)d. "
-                                      "Retrying in %(sleep_time)s seconds.",
-                                      dict(exc=exc,
-                                           func_name=func_name,
-                                           retries_left=(
-                                               max_retry_count - try_count),
-                                           sleep_time=sleep_time))
 
                             sleep_time = min(sleep_time + inc_sleep_time,
                                              max_sleep_time)
+                            if timeout:
+                                sleep_time = min(sleep_time, time_left)
+
+                            LOG.debug("Got expected exception %(exc)s while "
+                                      "calling function %(func_name)s. "
+                                      "Retries left: %(retries_left)s. "
+                                      "Time left: %(time_left)s. "
+                                      "Time elapsed: %(time_elapsed)s "
+                                      "Retrying in %(sleep_time)s seconds.",
+                                      dict(exc=exc,
+                                           func_name=func_name,
+                                           retries_left=tries_left,
+                                           time_left=time_left,
+                                           time_elapsed=time_elapsed,
+                                           sleep_time=sleep_time))
                             time.sleep(sleep_time)
         return inner
     return wrapper
