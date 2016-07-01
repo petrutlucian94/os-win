@@ -68,28 +68,71 @@ class UtilsTestCase(base.BaseTestCase):
 
         return fake_func, func_side_effect
 
-    @mock.patch('time.sleep')
-    def test_retry_decorator(self, mock_sleep):
+    @mock.patch.object(_utils, 'time')
+    def test_retry_decorator(self, mock_time):
         err_code = 1
         max_retry_count = 5
-        max_sleep_time = 4
+        max_sleep_time = 2
+        timeout = max_retry_count + 1
+        mock_time.time.side_effect = range(timeout)
 
         raised_exc = exceptions.Win32Exception(message='fake_exc',
                                                error_code=err_code)
         side_effect = [raised_exc] * max_retry_count
         side_effect.append(mock.sentinel.ret_val)
 
-        fake_func = self._get_fake_func_with_retry_decorator(
+        (fake_func,
+         fake_func_side_effect = self._get_fake_func_with_retry_decorator(
             error_codes=err_code,
             exceptions=exceptions.Win32Exception,
             max_retry_count=max_retry_count,
             max_sleep_time=max_sleep_time,
-            side_effect=side_effect)[0]
+            timeout=timeout,
+            side_effect=side_effect))
 
-        ret_val = fake_func()
+        ret_val = fake_func(mock.sentinel.arg,
+                            kwarg=mock.sentinel.kwarg)
         self.assertEqual(mock.sentinel.ret_val, ret_val)
-        mock_sleep.assert_has_calls([mock.call(sleep_time)
-                                     for sleep_time in [1, 2, 3, 4, 4]])
+        fake_func_side_effect.assert_has_calls(
+            [mock.call(mock.sentinel.arg, kwarg=mock.sentinel.kwarg)]
+            * (max_retry_count + 1))
+        self.assertEqual(max_retry_count + 1, mock_time.time.call_count)
+        mock_time.sleep.assert_has_calls(
+            [mock.call(sleep_time)
+             for sleep_time in [1, 2, 2, 2, 1]])
+
+    @mock.patch.object(_utils, 'time')
+    def _test_retry_decorator_exceeded(self, mock_time, mock_time_side_eff=0,
+                                       timeout=None, max_retry_count=None):
+        timeout = 3
+        mock_time.time.side_effect = [0, 1, 4]
+
+        raised_exc = exceptions.Win32Exception(message='fake_exc')
+
+        (fake_func,
+         fake_func_side_effect) = self._get_fake_func_with_retry_decorator(
+            exceptions=exceptions.Win32Exception,
+            timeout=timeout,
+            side_effect=raised_exc)[0]
+
+        self.assertRaises(exceptions.Win32Exception, fake_func)
+        self.assertEqual(3, mock_time.time.call_count)
+        mock_time.sleep.assert_called_once_with(1)
+
+    @mock.patch('time.sleep')
+    def test_retry_decorator_tries_exceeded(self, mock_sleep):
+        retry_count = 2
+        raised_exc = exceptions.Win32Exception(message='fake_exc')
+
+        (fake_func,
+         fake_func_side_effect) = self._get_fake_func_with_retry_decorator(
+            exceptions=exceptions.Win32Exception,
+            max_retry_count=retry_count,
+            side_effect=raised_exc)[0]
+
+        self.assertRaises(exceptions.Win32Exception, fake_func)
+        self.assertEqual(3, mock_time.time.call_count)
+        mock_time.sleep.assert_called_once_with(1)
 
     @mock.patch('time.sleep')
     def _test_retry_decorator_no_retry(self, mock_sleep,
