@@ -120,6 +120,11 @@ utils_map = {
             'min_version': 6.2,
             'max_version': None,
             'path': 'os_win.utils.storage.virtdisk.vhdutils.VHDUtils'}},
+    'vssutils': {
+        'VSSUtils': {
+            'min_version': 6.2,
+            'max_version': None,
+            'path': 'os_win.utils.storage.backup.vssutils.VSSUtils'}},
     'vmutils': {
         'VMUtils': {
             'min_version': 6.2,
@@ -233,3 +238,7 @@ def get_clusterutils():
 
 def get_dnsutils():
     return _get_class(class_type='dnsutils')
+
+
+def get_vssutils():
+    return _get_class(class_type='vssutils')

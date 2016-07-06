@@ -83,7 +83,7 @@ class Win32Utils(object):
 
     @staticmethod
     def get_error_message(error_code):
-        message_buffer = ctypes.c_char_p()
+        message_buffer = ctypes.c_char_p('\n')
 
         kernel32.FormatMessageA(
             FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_ALLOCATE_BUFFER |

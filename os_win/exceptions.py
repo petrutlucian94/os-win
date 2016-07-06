@@ -156,3 +156,7 @@ class DNSZoneAlreadyExists(DNSException):
 
 class JobTerminateFailed(HyperVException):
     msg_fmt = _("Could not terminate the requested job(s).")
+
+
+class Win32VssException(Win32Exception):
+    pass
