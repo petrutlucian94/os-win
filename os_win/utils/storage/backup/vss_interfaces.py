@@ -15,11 +15,18 @@
 
 """VSS COM interfaces, defined based on the original headers."""
 
+# NOTE(lpetrut): 'out' arguments will be automatically allocated and returned
+# when invoking methods. Some 'In_Out' arguments may not be properly handled,
+# in which case we have to marked them as 'in' arguments. HRESULTS are
+# automatically validated, COMError being raised in case of exceptions.
+
 import ctypes
 from ctypes import wintypes
 
 import comtypes
 
+# TODO(lpetrut): move those to a common location. Having those types defined
+# simplifies defining interfaces and structures.
 BYTE = ctypes.c_byte
 BOOL = wintypes.BOOL
 UINT = ctypes.c_uint
@@ -30,12 +37,13 @@ POINTER = ctypes.POINTER
 HRESULT = comtypes.HRESULT
 BSTR = comtypes.BSTR
 LPCWSTR = wintypes.LPCWSTR
+GUID = comtypes.GUID
 
 COMMETHOD = comtypes.COMMETHOD
 helpstring = comtypes.helpstring
 
-CLSID = comtypes.GUID
-VSS_ID = comtypes.GUID
+CLSID = GUID
+VSS_ID = GUID
 VSS_PWSZ = ctypes.c_wchar_p
 VSS_TIMESTAMP = ctypes.c_longlong
 
@@ -55,7 +63,7 @@ VSS_RESTOREMETHOD_ENUM = UINT
 VSS_WRITERRESTORE_ENUM = UINT
 VSS_RESTORE_TARGET = UINT
 
-NULL_UUID = comtypes.GUID()
+NULL_UUID = GUID()
 
 
 class VSS_SNAPSHOT_PROP(ctypes.Structure):
@@ -164,7 +172,7 @@ class IVssWMDependency(comtypes.IUnknown):
 
 
 class IVssAsync(comtypes.IUnknown):
-    _iid_ = comtypes.GUID("{507C37B4-CF5B-4e95-B0AF-14EB9767467E}")
+    _iid_ = GUID("{507C37B4-CF5B-4e95-B0AF-14EB9767467E}")
     _methods_ = [
         COMMETHOD(
             [], HRESULT, 'Cancel'
@@ -175,10 +183,13 @@ class IVssAsync(comtypes.IUnknown):
         ),
         COMMETHOD(
             [], HRESULT, 'QueryStatus',
-            (['in', 'out'], POINTER(HRESULT), 'pHrResult'),
-            (['in', 'out'], POINTER(UINT), 'pReserved')
+            (['out'], POINTER(HRESULT), 'pHrResult'),
+            (['in'], POINTER(UINT), 'pReserved', None)
         )
     ]
+
+
+PIVssAsync = ctypes.POINTER(IVssAsync)
 
 
 class IVssWMFiledesc(comtypes.IUnknown):
@@ -253,7 +264,7 @@ class IVssWMComponent(comtypes.IUnknown):
 
 
 class IVssExamineWriterMetadata(comtypes.IUnknown):
-    _iid_ = comtypes.GUID("{902fcf7f-b7fd-42f8-81f1-b2e400b1e5bd}")
+    _iid_ = GUID("{902fcf7f-b7fd-42f8-81f1-b2e400b1e5bd}")
     _methods_ = [
         COMMETHOD(
             [helpstring('obtain identity of the writer')],
@@ -332,7 +343,7 @@ class IVssExamineWriterMetadata(comtypes.IUnknown):
 
 class IVssComponent(comtypes.IUnknown):
     """Backup components interface."""
-    _iid_ = comtypes.GUID('{d2c72c96-c121-4518-b627-e5a93d010ead}')
+    _iid_ = GUID('{d2c72c96-c121-4518-b627-e5a93d010ead}')
     _methods_ = [
         COMMETHOD(
             [helpstring('obtain logical path of component')],
@@ -588,7 +599,7 @@ class IVssWriterComponentsExt(comtypes.IUnknown):
 
 
 class IVssEnumObject(comtypes.IUnknown):
-    _iid_ = comtypes.GUID("{AE1C7110-2F60-11d3-8A39-00C04F72D8E3}")
+    _iid_ = GUID("{AE1C7110-2F60-11d3-8A39-00C04F72D8E3}")
     _methods_ = [
         COMMETHOD(
             [], HRESULT, 'Next',
@@ -614,7 +625,7 @@ IVssEnumObject._methods_.append(
 
 
 class IVssBackupComponents(comtypes.IUnknown):
-    _iid_ = comtypes.GUID("{665c1d5f-c218-414d-a05d-7fef5f9d5c86}")
+    _iid_ = GUID("{665c1d5f-c218-414d-a05d-7fef5f9d5c86}")
     _methods_ = [
         COMMETHOD(
             [], HRESULT, 'GetWriterComponentsCount',
@@ -652,7 +663,7 @@ class IVssBackupComponents(comtypes.IUnknown):
         COMMETHOD(
             [helpstring('gather writer metadata')],
             HRESULT, 'GatherWriterMetadata',
-            (['out'], POINTER(POINTER(IVssAsync)), 'pAsync')
+            (['out'], POINTER(PIVssAsync), 'pAsync')
         ),
         COMMETHOD(
             [helpstring('get count of writers with metadata')],

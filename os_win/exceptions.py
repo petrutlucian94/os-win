@@ -37,6 +37,10 @@ class NotFound(OSWinException):
     msg_fmt = _("Resource could not be found: %(resource)s")
 
 
+class JobCanceled(OSWinException):
+    msg_fmt = _("The job has been canceled.")
+
+
 class HyperVException(OSWinException):
     pass
 
@@ -158,5 +162,17 @@ class JobTerminateFailed(HyperVException):
     msg_fmt = _("Could not terminate the requested job(s).")
 
 
-class Win32VssException(Win32Exception):
+class VSSException(OSWinException):
+    pass
+
+
+class VSSComError(VSSException):
+    def __init__(self, message=None, **kwargs):
+        self.hresult = kwargs.get('hresult')
+        if self.hresult:
+            message = "%s HRESULT: %s" % (message, self.hresult)
+        super(VSSComError, self).__init__(message=message, **kwargs)
+
+
+class VSSJobCanceled(VSSException, JobCanceled):
     pass

@@ -17,30 +17,73 @@ import ctypes
 import sys
 
 if sys.platform == 'win32':
-    from ctypes import wintypes
-    kernel32 = ctypes.windll.kernel32
     vssapi = ctypes.windll.vssapi
-
     from os_win.utils.storage.backup import vss_interfaces as vss_ifaces
 
 from os_win._i18n import _
 from os_win import constants
 from os_win import exceptions
 from os_win.utils import win32utils
+from os_win.utils.storage.backup import vss_constants as vss_const
 
 
-class VSSUtils(object):
-    def __init__(self):
-        self._win32_utils = win32utils.Win32Utils()
+class VSSBackup(object):
+    def __init__(self, select_components=True,
+                 backup_type=vss_const.VSS_BT_FULL,
+                 writer_classes=None):
+        # Note(lpetrut): we may use versioned objects for backup opts.
+        self._select_components = select_components
+        self._backup_type = backup_type
 
-    def _run_and_check_output(self, *args, **kwargs):
-        kwargs.update(failure_exc=exceptions.Win32VssException,
-                      error_on_nonzero_ret_val=True,
-                      ret_val_is_err_code=True)
-        return self._win32_utils.run_and_check_output(*args, **kwargs)
+        self._set_writer_classes(writer_classes)
+        self._initialize()
 
-    def create_backup_components(self):
+        self._get_writer_metadata()
+
+    def _initialize(self):
         p_backup_components = vss_ifaces.pIVssBackupComponents()
         vssapi.CreateVssBackupComponentsInternal(
             ctypes.byref(p_backup_components))
-        return p_backup_components
+        self._backup_components = p_backup_components
+
+        self._backup_components.InitializeForBackup()
+        self._backup_components.SetBackupState(
+            bSelectComponents=self._select_components,
+            bBackupBootableSystemState=False,
+            backupType=self._backup_type,
+            bPartialFileSupport=False)
+        self._backup_components.EnableWriterClasses(
+            rgWriterClassId=self._writer_classes,
+            cClassId=len(self._writer_classes))
+
+    def _set_writer_classes(self, writer_classes=None):
+        writer_classes = writer_classes or []
+        writer_classes = [vss_ifaces.GUID(writer_guid)
+                          for writer_guid in writer_classes]
+        # This will be an array of GUIDs.
+        self._writer_classes = (
+            vss_ifaces.GUID * len(writer_classes))(*writer_classes)
+
+    def _get_writer_metadata(self):
+        # Retrieve the metadata for all the writers. Should be called only
+        # once for each iVssBackupComponents instance.
+        async = self._backup_components.GatherWriterMetadata()
+        self._wait_async_job(async)
+
+    def _wait_async_job(self, async, successful_return_values=None):
+        # TODO(lpetrut): we probably should add a timeout argument.
+        successful_return_values = successful_return_values or []
+        successful_return_values.append(vss_const.VSS_S_ASYNC_FINISHED)
+
+        async.Wait()
+        hresult = async.QueryStatus()
+
+        if hresult in successful_return_values:
+            return
+        elif hresult == vss_const.VSS_S_ASYNC_PENDING:
+            LOG.debug("The async job is still pending. Waiting...")
+        elif hresult == vss_const.VSS_S_ASYNC_CANCELED:
+            raise exceptions.VSSJobCanceled()
+        else:
+            err_msg = _("Async job failed.")
+            raise exceptions.VSSComError(err_msg, hresult=hresult.value)
