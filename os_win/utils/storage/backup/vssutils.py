@@ -38,8 +38,6 @@ class VSSBackup(object):
         self._set_writer_classes(writer_classes)
         self._initialize()
 
-        self._get_writer_metadata()
-
     def _initialize(self):
         p_backup_components = vss_ifaces.pIVssBackupComponents()
         vssapi.CreateVssBackupComponentsInternal(
@@ -65,10 +63,18 @@ class VSSBackup(object):
             vss_ifaces.GUID * len(writer_classes))(*writer_classes)
 
     def _get_writer_metadata(self):
+        writer_metadata = []
         # Retrieve the metadata for all the writers. Should be called only
         # once for each iVssBackupComponents instance.
         async = self._backup_components.GatherWriterMetadata()
         self._wait_async_job(async)
+
+        wmd_count = self._backup_components.GetWriterMetadataCount()
+        for wmd_idx in range(wmd_count):
+            (writer_id,
+             wmd) = self._backup_components.GetWriterMetadata(wmd_idx)
+            writer_metadata.append(wmd)
+        return writer_metadata
 
     def _wait_async_job(self, async, successful_return_values=None):
         # TODO(lpetrut): we probably should add a timeout argument.

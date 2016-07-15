@@ -29,6 +29,7 @@ import comtypes
 # simplifies defining interfaces and structures.
 BYTE = ctypes.c_byte
 BOOL = wintypes.BOOL
+BOOLEAN = wintypes.BOOLEAN
 UINT = ctypes.c_uint
 ULONG = ctypes.c_ulong
 LONG = ctypes.c_long
@@ -131,13 +132,13 @@ class VSS_COMPONENTINFO(ctypes.Structure):
         #  icon
         ('cbIcon', UINT),
         #  whether component supplies restore metadata
-        ('bRestoreMetadata', BOOL),
+        ('bRestoreMetadata', BOOLEAN),
         #  whether component needs to be informed if backup was successful
-        ('bNotifyOnBackupComplete', BOOL),
+        ('bNotifyOnBackupComplete', BOOLEAN),
         #  is component selectable
-        ('bSelectable', BOOL),
+        ('bSelectable', BOOLEAN),
         #  is component selectable for restore
-        ('bSelectableForRestore', BOOL),
+        ('bSelectableForRestore', BOOLEAN),
         #  extra attribute flags for the component
         ('dwComponentFlags', DWORD),
         #  # of files in file group
@@ -194,7 +195,7 @@ PIVssAsync = ctypes.POINTER(IVssAsync)
 
 class IVssWMFiledesc(comtypes.IUnknown):
     _iid_ = NULL_UUID
-    _methods = [
+    _methods_ = [
         COMMETHOD(
             [helpstring('get path to toplevel directory')],
             HRESULT, 'GetPath',
@@ -208,7 +209,7 @@ class IVssWMFiledesc(comtypes.IUnknown):
         COMMETHOD(
             [helpstring('is path a directory or root of a tree')],
             HRESULT, 'GetRecursive',
-            (['out'], POINTER(BOOL), 'pbRecursive')
+            (['out'], POINTER(BOOLEAN), 'pbRecursive')
         ),
         COMMETHOD(
             [helpstring('alternate location for files')],
@@ -308,7 +309,7 @@ class IVssExamineWriterMetadata(comtypes.IUnknown):
             (['out'], POINTER(BSTR), 'pbstrService'),
             (['out'], POINTER(BSTR), 'pbstrUserProcedure'),
             (['out'], POINTER(VSS_WRITERRESTORE_ENUM), 'pwriterRestore'),
-            (['out'], POINTER(BOOL), 'pbRebootRequired'),
+            (['out'], POINTER(BOOLEAN), 'pbRebootRequired'),
             (['out'], POINTER(UINT), 'pcMappings')
         ),
         COMMETHOD(
@@ -365,7 +366,7 @@ class IVssComponent(comtypes.IUnknown):
             [helpstring('determine whether the component '
                         'was successfully backed up.')],
             HRESULT, 'GetBackupSucceeded',
-            (['out'], POINTER(BOOL), 'pbSucceeded')
+            (['out'], POINTER(BOOLEAN), 'pbSucceeded')
         ),
         COMMETHOD(
             [helpstring('get altermative location mapping count')],
@@ -415,11 +416,11 @@ class IVssComponent(comtypes.IUnknown):
             [helpstring('determine if the component '
                         'is selected to be restored')],
             HRESULT, 'IsSelectedForRestore',
-            (['out'], POINTER(BOOL), 'pbSelectedForRestore')
+            (['out'], POINTER(BOOLEAN), 'pbSelectedForRestore')
         ),
         COMMETHOD(
             [], HRESULT, 'GetAdditionalRestores',
-            (['out'], POINTER(BOOL), 'pbAdditionalRestores')
+            (['out'], POINTER(BOOLEAN), 'pbAdditionalRestores')
         ),
         COMMETHOD(
             [helpstring('get count of new target specifications')],
@@ -537,7 +538,7 @@ class IVssComponent(comtypes.IUnknown):
             (['in'], UINT, 'iComponent'),
             (['out'], POINTER(BSTR), 'pbstrLogicalPath'),
             (['out'], POINTER(BSTR), 'pbstrComponentName'),
-            (['out'], POINTER(BOOL), 'pbRepair')
+            (['out'], POINTER(BOOLEAN), 'pbRepair')
         ),
         COMMETHOD(
             [helpstring('obtain whether files were successfully restored')],
@@ -646,10 +647,10 @@ class IVssBackupComponents(comtypes.IUnknown):
         COMMETHOD(
             [helpstring('set state describing backup')],
             HRESULT, 'SetBackupState',
-            (['in'], BOOL, 'bSelectComponents'),
-            (['in'], BOOL, 'bBackupBootableSystemState'),
+            (['in'], BOOLEAN, 'bSelectComponents'),
+            (['in'], BOOLEAN, 'bBackupBootableSystemState'),
             (['in'], VSS_BACKUP_TYPE, 'backupType'),
-            (['in'], BOOL, 'bPartialFileSupport', False)
+            (['in'], BOOLEAN, 'bPartialFileSupport', False)
         ),
         COMMETHOD(
             [], HRESULT, 'InitializeForRestore',
@@ -728,7 +729,7 @@ class IVssBackupComponents(comtypes.IUnknown):
             (['in'], VSS_COMPONENT_TYPE, 'ct'),
             (['in'], LPCWSTR, 'wszLogicalPath'),
             (['in'], LPCWSTR, 'wszComponentName'),
-            (['in'], BOOL, 'bSucceded')
+            (['in'], BOOLEAN, 'bSucceded')
         ),
         COMMETHOD(
             [helpstring('set backup options for the writer')],
@@ -747,7 +748,7 @@ class IVssBackupComponents(comtypes.IUnknown):
             (['in'], VSS_COMPONENT_TYPE, 'ct'),
             (['in'], LPCWSTR, 'wszLogicalPath'),
             (['in'], LPCWSTR, 'wszComponentName'),
-            (['in'], BOOL, 'bSelectedForRestore')
+            (['in'], BOOLEAN, 'bSelectedForRestore')
         ),
         COMMETHOD(
             [helpstring('set restore options for the writer')],
@@ -765,7 +766,7 @@ class IVssBackupComponents(comtypes.IUnknown):
             (['in'], VSS_COMPONENT_TYPE, 'ct'),
             (['in'], LPCWSTR, 'wszLogicalPath'),
             (['in'], LPCWSTR, 'wszComponentName'),
-            (['in'], BOOL, 'bAdditionalRestores')
+            (['in'], BOOLEAN, 'bAdditionalRestores')
         ),
         COMMETHOD(
             [helpstring('set the backup stamp that the differential '
@@ -796,7 +797,7 @@ class IVssBackupComponents(comtypes.IUnknown):
             (['in'], LPCWSTR, 'wszComponentName'),
             (['in'], LPCWSTR, 'wszPath'),
             (['in'], LPCWSTR, 'wszFilespec'),
-            (['in'], BOOL, 'bRecursive'),
+            (['in'], BOOLEAN, 'bRecursive'),
             (['in'], LPCWSTR, 'wszDestination')
         ),
         COMMETHOD(
@@ -808,7 +809,7 @@ class IVssBackupComponents(comtypes.IUnknown):
             (['in'], LPCWSTR, 'wszComponentName'),
             (['in'], LPCWSTR, 'wszSubComponentLogicalPath'),
             (['in'], LPCWSTR, 'wszSubComponentName'),
-            (['in'], BOOL, 'bRepair')
+            (['in'], BOOLEAN, 'bRepair')
         ),
         COMMETHOD(
             [helpstring('requestor indicates whether files '
@@ -830,7 +831,7 @@ class IVssBackupComponents(comtypes.IUnknown):
             (['in'], LPCWSTR, 'wszComponentName'),
             (['in'], LPCWSTR, 'wszPath'),
             (['in'], LPCWSTR, 'wszFileName'),
-            (['in'], BOOL, 'bRecursive'),
+            (['in'], BOOLEAN, 'bRecursive'),
             (['in'], LPCWSTR, 'wszAlternatePath')
         ),
         COMMETHOD(
