@@ -27,6 +27,7 @@ from oslo_log import log as logging
 from os_win._i18n import _, _LE
 from os_win import exceptions
 from os_win.utils import baseutils
+from os_win.utils.compute import clusapi_utils
 
 LOG = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ class ClusterUtils(baseutils.BaseUtils):
 
     def __init__(self, host='.'):
         self._instance_name_regex = re.compile('Virtual Machine (.*)')
+        self._clusapi_utils = clusapi_utils.ClusApiUtils()
 
         if sys.platform == 'win32':
             self._init_hyperv_conn(host)
@@ -183,15 +185,26 @@ class ClusterUtils(baseutils.BaseUtils):
 
     def _migrate_vm(self, vm_name, new_host, migration_type):
         vm_group = self._lookup_vm_group_check(vm_name)
-        try:
-            vm_group.MoveToNewNodeParams(self._IGNORE_LOCKED, new_host,
-                                         [migration_type])
-        except Exception as e:
-            LOG.error(_LE('Exception during cluster live migration of '
-                          '%(vm_name)s to %(host)s: %(exception)s'),
-                      {'vm_name': vm_name,
-                       'host': new_host,
-                       'exception': e})
+
+        syntax = clusapi_utils.CLUSPROP_SYNTAX_LIST_VALUE_DWORD
+        migr_type = clusapi_utils.DWORD(migration_type)
+
+        prop_entries = [
+            self._clusapi_utils.get_property_list_entry(
+                'Virtual Machine', syntax, migr_type),
+            self._clusapi_utils.get_property_list_entry(
+                'Virtual Machine Configuration', syntax, migr_type)
+        ]
+        prop_list = self._clusapi_utils.get_property_list(prop_entries)
+
+        flags = (
+            clusapi_utils.CLUSAPI_GROUP_MOVE_RETURN_TO_SOURCE_NODE_ON_ERROR |
+            clusapi_utils.CLUSAPI_GROUP_MOVE_QUEUE_ENABLED |
+            clusapi_utils.CLUSAPI_GROUP_MOVE_HIGH_PRIORITY_START)
+
+        vm_group.MoveToNewNodeParams(NodeName=new_host,
+                                     Parameters=bytearray(prop_list),
+                                     Flags=flags)
 
     def monitor_vm_failover(self, callback):
         """Creates a monitor to check for new WMI MSCluster_Resource
