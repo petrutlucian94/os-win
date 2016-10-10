@@ -51,6 +51,7 @@ VHDX_SIGNATURE = b'vhdxfile'
 DEVICE_ID_MAP = {
     constants.DISK_FORMAT_VHD: w_const.VIRTUAL_STORAGE_TYPE_DEVICE_VHD,
     constants.DISK_FORMAT_VHDX: w_const.VIRTUAL_STORAGE_TYPE_DEVICE_VHDX,
+    constants.DISK_FORMAT_VHDSET: w_const.VIRTUAL_STORAGE_TYPE_DEVICE_VHDSET,
 }
 
 VHD_HEADER_SIZE_FIX = 512
@@ -184,10 +185,10 @@ class VHDUtils(object):
         device_id = DEVICE_ID_MAP.get(vhd_format)
         # If the disk format is not recognised by extension,
         # we attempt to retrieve it by seeking the signature.
-        if not device_id and os.path.exists(vhd_path):
+        if device_id is None and os.path.exists(vhd_path):
             vhd_format = self._get_vhd_format_by_signature(vhd_path)
 
-        if not vhd_format:
+        if vhd_format is None:
             raise exceptions.VHDException(
                 _("Could not retrieve VHD format: %s") % vhd_path)
 
@@ -546,3 +547,12 @@ class VHDUtils(object):
 
         os.unlink(vhd_path)
         os.rename(tmp_path, vhd_path)
+
+    def take_vhd_set_snapshot(self, vhd_path):
+        handle = self._open(vhd_path)
+        params = vdisk_struct.TAKE_SNAPSHOT_VHDSET_PARAMETERS_V1()
+        self._run_and_check_output(virtdisk.TakeSnapshotVhdSet,
+                                   handle,
+                                   ctypes.byref(params),
+                                   0,
+                                   cleanup_handle=handle)

@@ -190,6 +190,17 @@ class SET_VIRTUAL_DISK_INFO(ctypes.Structure):
 PSET_VIRTUAL_DISK_INFO = ctypes.POINTER(SET_VIRTUAL_DISK_INFO)
 
 
+class TAKE_SNAPSHOT_VHDSET_PARAMETERS_V1(ctypes.Structure):
+    _fields_ = [('Version', ctypes.c_uint),
+                ('SnapshotId', wintypes.GUID)]
+
+    def __init__(self, *args, **kwargs):
+        self.Version = vdisk_const.TAKE_SNAPSHOT_VHDSET_VERSION_1
+        super(TAKE_SNAPSHOT_VHDSET_PARAMETERS_V1, self).__init__(
+            *args, **kwargs)
+
+
+
 def register():
     global lib_handle
     lib_handle = ctypes.windll.virtdisk
