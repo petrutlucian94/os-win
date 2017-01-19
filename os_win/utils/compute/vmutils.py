@@ -283,6 +283,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
                   vcpus_per_numa_node, limit_cpu_features, dynamic_mem_ratio,
                   configuration_root_dir=None, snapshot_dir=None,
                   host_shutdown_action=None,
+                  snapshot_type=constants.VM_SNAPSHOT_TYPE_STANDARD,
                   is_planned_vm=False):
         virtual_system_type = self._get_virtual_system_type(is_planned_vm)
 
@@ -300,10 +301,9 @@ class VMUtils(baseutils.BaseUtilsVirt):
         self._set_vm_vcpus(vmsetting, vcpus_num, vcpus_per_numa_node,
                            limit_cpu_features)
 
-        update_needed = (configuration_root_dir or snapshot_dir or
-                         host_shutdown_action)
-        if update_needed:
-            self._modify_virtual_system(vmsetting)
+        self._set_vm_snapshot_type(vmsetting, snapshot_type)
+
+        self._modify_virtual_system(vmsetting)
 
     def check_admin_permissions(self):
         if not self._compat_conn.Msvm_VirtualSystemManagementService():
@@ -1144,3 +1144,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
         """
         raise NotImplementedError(_('PCI passthrough is supported on '
                                     'Windows / Hyper-V Server 2016 or newer.'))
+
+    def _set_vm_snapshot_type(self, vmsettings, snapshot_type):
+        # Supported on Windows Server 2016 or newer.
+        pass

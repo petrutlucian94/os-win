@@ -282,3 +282,6 @@ class VMUtils10(vmutils.VMUtils):
                       "%(product_id)s is not attached to %(vm_name)s",
                       {'vendor_id': vendor_id, 'product_id': product_id,
                        'vm_name': vm_name})
+
+    def _set_vm_snapshot_type(self, vmsettings, snapshot_type):
+        vmsettings.UserSnapshotType = snapshot_type
