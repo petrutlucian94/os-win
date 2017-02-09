@@ -63,9 +63,15 @@ utils_map = {
     'iscsi_target_utils': {
         'ISCSITargetUtils': {
             'min_version': 6.2,
-            'max_version': None,
+            'max_version': 6.3,
             'path': 'os_win.utils.storage.target.iscsi_target_utils.'
                     'ISCSITargetUtils'}},
+    'iscsi_target_utils': {
+        'ISCSITargetUtils': {
+            'min_version': 6.3,
+            'max_version': None,
+            'path': 'os_win.utils.storage.target.iscsi_target_utils6_3.'
+                    'ISCSITargetUtils6_3'}},
     'fc_utils': {
         'FCUtils': {
             'min_version': 6.2,
