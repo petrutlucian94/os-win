@@ -198,8 +198,18 @@ class ClusterWin32Exception(ClusterException, Win32Exception):
     pass
 
 
-class InvalidClusterGroupState(ClusterException):
-    msg_fmt = _("The cluster group %(group_name)s is in an invalid state. "
-                "Expected state %(expected_state)s. Expected owner node: "
-                "%(expected_node)s. Current group state: %(group_state)s. "
+class ClusterGroupMigrationFailed(ClusterException):
+    msg_fmt = _("Failed to migrate cluster group %(group_name)s. "
+                "Expected state %(expected_state)s. "
+                "Expected owner node: %(expected_node)s. "
+                "Current group state: %(group_state)s. "
+                "Current owner node: %(owner_node)s.")
+
+
+class ClusterGroupMigrationTimeOut(ClusterGroupMigrationFailed):
+    msg_fmt = _("Cluster group '%(group_name)s' migration "
+                "timed out after %(time_elapsed)0.3fs. "
+                "Expected state %(expected_state)s. "
+                "Expected owner node: %(expected_node)s. "
+                "Current group state: %(group_state)s. "
                 "Current owner node: %(owner_node)s.")

@@ -19,12 +19,15 @@ Utility class for VM related operations on Hyper-V Clusters.
 
 import re
 import sys
+import threading
+import time
 
 from eventlet import patcher
 from eventlet import tpool
 from oslo_log import log as logging
+from oslo_utils import excutils
 
-from os_win._i18n import _, _LE
+from os_win._i18n import _, _LI, _LE
 from os_win import _utils
 from os_win import constants
 from os_win import exceptions
@@ -55,6 +58,8 @@ class ClusterUtils(baseutils.BaseUtils):
 
     _WMI_EVENT_TIMEOUT_MS = 100
     _WMI_EVENT_CHECK_INTERVAL = 2
+
+    _DEFAULT_LIVE_MIGRATION_TIMEOUT = 60  # seconds
 
     def __init__(self, host='.'):
         self._instance_name_regex = re.compile('Virtual Machine (.*)')
@@ -182,16 +187,14 @@ class ClusterUtils(baseutils.BaseUtils):
     def vm_exists(self, vm_name):
         return self._lookup_vm(vm_name) is not None
 
-    def live_migrate_vm(self, vm_name, new_host, timeout=None):
-        valid_transition_states = [constants.CLUSTER_GROUP_PENDING]
+    def live_migrate_vm(self, vm_name, new_host,
+                        timeout=_DEFAULT_LIVE_MIGRATION_TIMEOUT):
         self._migrate_vm(vm_name, new_host, self._LIVE_MIGRATION_TYPE,
                          constants.CLUSTER_GROUP_ONLINE,
-                         valid_transition_states,
                          timeout)
 
     def _migrate_vm(self, vm_name, new_host, migration_type,
-                    exp_state_after_migr, valid_transition_states,
-                    timeout):
+                    exp_state_after_migr, timeout):
         syntax = _clusapi_utils.CLUSPROP_SYNTAX_LIST_VALUE_DWORD
         migr_type = _clusapi_utils.DWORD(migration_type)
 
@@ -219,16 +222,43 @@ class ClusterUtils(baseutils.BaseUtils):
             dest_node_handle = self._clusapi_utils.open_cluster_node(
                 cluster_handle, new_host)
 
-            self._clusapi_utils.move_cluster_group(group_handle,
-                                                   dest_node_handle,
-                                                   flags,
-                                                   prop_list)
-            self._wait_for_cluster_group_state(vm_name,
-                                               group_handle,
-                                               exp_state_after_migr,
-                                               new_host,
-                                               valid_transition_states,
-                                               timeout)
+            previous_host = self._clusapi_utils.get_cluster_group_state(
+                group_handle)['owner_node']
+
+            event_type = _clusapi_utils.CLUSTER_CHANGE_GROUP_STATE
+            event_filter = (
+                lambda event:
+                event['cluster_object_name'].lower() == vm_name.lower())
+            with ClusterEventListener(event_type, event_filter,
+                                      cluster_handle) as listener:
+                self._clusapi_utils.move_cluster_group(group_handle,
+                                                       dest_node_handle,
+                                                       flags,
+                                                       prop_list)
+                try:
+                    self._wait_for_cluster_group_migration(listener,
+                                                           vm_name,
+                                                           group_handle,
+                                                           exp_state_after_migr,
+                                                           new_host,
+                                                           timeout)
+                except exceptions.ClusterGroupMigrationTimeOut:
+                    with excutils.save_and_reraise_exception() as ctxt:
+                        self._cancel_cluster_group_migration(
+                            listener, vm_name, group_handle, timeout)
+
+                        group_state_info = (
+                            self._clusapi_utils.get_cluster_group_state(
+                                group_handle))
+                        group_state = group_state_info['state']
+                        current_host = group_state_info['owner_node']
+                        if (group_state == exp_state_after_migr and
+                                current_host.lower() ==
+                                new_host.lower()):
+                            LOG.info(_LI("Cluster group migration finished "
+                                         "successfully after cancel attempt. "
+                                         "Supressing timeout error."))
+                            ctxt.reraise = False
         finally:
             if group_handle:
                 self._clusapi_utils.close_cluster_group(group_handle)
@@ -237,34 +267,102 @@ class ClusterUtils(baseutils.BaseUtils):
             if cluster_handle:
                 self._clusapi_utils.close_cluster(cluster_handle)
 
-    def _wait_for_cluster_group_state(self, group_name, group_handle,
-                                      desired_state, desired_node,
-                                      valid_transition_states, timeout):
-        @_utils.retry_decorator(max_retry_count=None,
-                                timeout=timeout,
-                                exceptions=exceptions.InvalidClusterGroupState,
-                                pass_retry_context=True)
-        def _ensure_group_state(retry_context):
+    def _cancel_cluster_group_migration(self, event_listener,
+                                        group_name, group_handle,
+                                        timeout=None):
+        try:
+            cancel_finished = self._clusapi_utils.cancel_cluster_group_operation(
+                group_handle)
+        except exceptions.Win32Exception as ex:
+            group_state = self._clusapi_utils.get_cluster_group_state(
+                group_handle)['state']
+
+            if (ex.error_code == _clusapi_utils.ERROR_INVALID_STATE and
+                    group_state != constants.CLUSTER_GROUP_PENDING):
+                LOG.debug("Ignoring group migration cancel error. Group "
+                          "state is not 'pending', currently: %s.", group_state)
+                cancel_finished = True
+            else:
+                raise
+
+        if not cancel_finished:
+            LOG.debug("Waiting for group migration to be canceled.")
+            try:
+                self._wait_for_cluster_group_migration(
+                    event_listener, group_name, group_handle,
+                    timeout=timeout)
+            except Exception:
+                LOG.exception(_LE("Failed to cancel cluster group migration."))
+                raise exceptions.JobTerminateFailed()
+
+        LOG.info(_LI("Cluster group migration canceled."))
+
+    def _wait_for_cluster_group_migration(self, event_listener,
+                                          group_name, group_handle,
+                                          desired_state=None, desired_node=None,
+                                          timeout=None):
+        time_start = time.time()
+        time_left = timeout if timeout else 'undefined'
+
+        migration_started = False
+        while not timeout or time_left > 0:
+            time_elapsed = time.time() - time_start
+            time_left = timeout - time_elapsed if timeout else 'undefined'
+
+            LOG.debug("Waiting for cluster group '%(group_name)s' "
+                      "migration to finish. "
+                      "Expected node: %(desired_node)s. "
+                      "Expected state: %(desired_state)s. "
+                      "Time left: %(time_left)s.",
+                      dict(group_name=group_name,
+                           desired_node=desired_node,
+                           desired_state=desired_state,
+                           time_left=time_left))
+
+            # Some events may be missed, for which reason we ensure this won't
+            # block undefinetely.
+            event_listener.wait(time_left if timeout
+                                else self._DEFAULT_LIVE_MIGRATION_TIMEOUT)
+
             state_info = self._clusapi_utils.get_cluster_group_state(
                 group_handle)
             owner_node = state_info['owner_node']
             group_state = state_info['state']
 
-            reached_desired_state = desired_state == group_state
-            reached_desired_node = desired_node.lower() == owner_node.lower()
+            reached_desired_state = (desired_state is None or
+                                     desired_state == group_state)
+            reached_desired_node = (desired_node is None or
+                                   desired_node.lower() == owner_node.lower())
 
-            if not (reached_desired_state and reached_desired_node):
-                valid_state = group_state in valid_transition_states
-                retry_context['prevent_retry'] = not valid_state
+            migration_completed = (reached_desired_state and reached_desired_node
+                                   and group_state != constants.CLUSTER_GROUP_PENDING)
+            if migration_completed:
+                LOG.debug("Cluster group migration finished.")
+                return
 
-                raise exceptions.InvalidClusterGroupState(
+            if group_state == constants.CLUSTER_GROUP_PENDING:
+                migration_started = True
+            # The migration started, is not running anymore but the group
+            # did not reach the expected state. We're treating this as a
+            # failure.
+            elif (migration_started or
+                    group_state == constants.CLUSTER_GROUP_FAILED):
+                LOG.error(_LE("Cluster group migration failed."))
+                raise exceptions.ClusterGroupMigrationFailed(
                     group_name=group_name,
                     expected_state=desired_state,
                     expected_node=desired_node,
                     group_state=group_state,
                     owner_node=owner_node)
 
-        _ensure_group_state()
+        LOG.error(_LE("Cluster group migration timed out."))
+        raise exceptions.ClusterGroupMigrationTimeOut(
+            group_name=group_name,
+            time_elapsed=time_elapsed,
+            expected_state=desired_state,
+            expected_node=desired_node,
+            group_state=group_state,
+            owner_node=owner_node)
 
     def monitor_vm_failover(self, callback):
         """Creates a monitor to check for new WMI MSCluster_Resource
@@ -306,3 +404,95 @@ class ClusterUtils(baseutils.BaseUtils):
                         _LE("Exception during failover callback."))
         except exceptions.x_wmi_timed_out:
             pass
+
+
+class ClusterEventListener(object):
+    _EVENT_WAIT_TIMEOUT_MS = 10000
+
+    _notif_handle = None
+    _cluster_handle = None
+    _external_cluster_handle = False
+    _running = False
+
+    def __init__(self, event_type, event_filter=None, cluster_handle=None):
+        if cluster_handle is not None:
+            self._cluster_handle = cluster_handle
+            self._external_cluster_handle = True
+
+        self._event_type = event_type
+        self._event_filter = (event_filter if event_filter is not None
+                              else lambda event: True)
+        self._event_received = threading.Event()
+
+        self._clusapi_utils = _clusapi_utils.ClusApiUtils()
+
+        self._setup()
+
+    def __enter__(self):
+        self._ensure_listener_running()
+        return self
+
+    def _setup(self):
+        if not self._external_cluster_handle:
+            self._cluster_handle = self._clusapi_utils.open_cluster()
+
+        self._notif_handle = self._clusapi_utils.create_cluster_notify_port(
+            self._cluster_handle, self._event_type)
+
+        # If eventlet monkey patching is used, this will actually be a
+        # greenthread. We just don't want to enforce eventlet usage.
+        worker = threading.Thread(target=self._listen)
+        worker.setDaemon(True)
+        worker.start()
+
+        self._running = True
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.stop()
+
+    def _signal_stopped(self):
+        self._running = False
+        self._event_received.set()
+
+    def stop(self):
+        self._signal_stopped()
+
+        if self._cluster_handle and not self._external_cluster_handle:
+            self._clusapi_utils.close_cluster(self._cluster_handle)
+        if self._notif_handle:
+            self._clusapi_utils.close_cluster_notify_port(self._notif_handle)
+
+    def _listen(self):
+        try:
+            while self._running:
+                try:
+                    event = _utils.avoid_blocking_call(
+                        self._clusapi_utils.get_cluster_notify,
+                        self._notif_handle,
+                        self._event_type,
+                        self._EVENT_WAIT_TIMEOUT_MS)
+                except exceptions.Win32Exception as ex:
+                    if ex.error_code == _clusapi_utils.ERROR_WAIT_TIMEOUT:
+                        continue
+                    else:
+                        raise
+                if self._event_filter(event):
+                    self._event_received.set()
+        except Exception as ex:
+            if self._running:
+                LOG.exception(
+                    _LE("Unexpected exception in event listener loop."))
+                self._signal_stopped()
+
+    def wait(self, timeout=None):
+        self._ensure_listener_running()
+
+        self._event_received.wait(timeout)
+
+        self._ensure_listener_running()
+        self._event_received.clear()
+
+    def _ensure_listener_running(self):
+        if not self._running:
+            raise exceptions.OSWinException(
+                _("Cluster event listener is not running."))

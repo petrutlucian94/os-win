@@ -25,6 +25,9 @@ from os_win.utils import win32utils
 
 DWORD = ctypes.c_ulong
 
+# TODO(lpetrut): aggregate windows specific constants
+INVALID_HANDLE_VALUE = -1
+
 CLUSPROP_SYNTAX_NAME = 262147
 CLUSPROP_SYNTAX_ENDMARK = 0
 CLUSPROP_SYNTAX_LIST_VALUE_DWORD = 65538
@@ -33,6 +36,11 @@ CLUSAPI_GROUP_MOVE_RETURN_TO_SOURCE_NODE_ON_ERROR = 2
 CLUSAPI_GROUP_MOVE_QUEUE_ENABLED = 4
 CLUSAPI_GROUP_MOVE_HIGH_PRIORITY_START = 8
 
+CLUSTER_CHANGE_GROUP_STATE = 0x00001000
+CLUSTER_CHANGE_GROUP_PROPERTY = 0x00008000
+
+ERROR_INVALID_STATE = 5023
+ERROR_WAIT_TIMEOUT = 258
 ERROR_IO_PENDING = 997
 
 CLUSPROP_NAME_VM = 'Virtual Machine'
@@ -158,14 +166,20 @@ class ClusApiUtils(object):
         clusapi.CloseClusterNode(node_handle)
 
     def cancel_cluster_group_operation(self, group_handle):
-        """Requests a pending move operation to be canceled."""
+        """Requests a pending move operation to be canceled.
+           return: True if the cancel request completed succesfuly,
+                   False if it's still in proggress.
+        """
         # This only applies to move operations requested by
         # MoveClusterGroup(Ex), thus it will not apply to fail overs.
-        self._run_and_check_output(
+        ret_val = self._run_and_check_output(
             clusapi.CancelClusterGroupOperation,
             group_handle,
             0,  # cancel flags (reserved for future use by MS)
             ignored_error_codes=[ERROR_IO_PENDING])
+
+        cancel_completed = ret_val != ERROR_IO_PENDING
+        return cancel_completed
 
     def move_cluster_group(self, group_handle, destination_node_handle,
                            move_flags, property_list):
@@ -195,3 +209,41 @@ class ClusApiUtils(object):
 
         return {'state': group_state,
                 'owner_node': node_name_buff.value}
+
+    def create_cluster_notify_port(self, cluster_handle, notif_filter,
+                                   notif_handle=None, notif_key=None):
+        notif_key = notif_key or notif_filter
+        notif_handle = notif_handle or INVALID_HANDLE_VALUE
+        # If INVALID_HANDLE_VALUE is passed as the notification handle,
+        # a new one will be created. Otherwise, new events are added to the
+        # specified notification port.
+        notif_handle = self._run_and_check_output(
+            clusapi.CreateClusterNotifyPort,
+            notif_handle,
+            cluster_handle,
+            notif_filter,
+            ctypes.byref(ctypes.c_ulong(notif_key)),
+            **self._open_handle_check_flags)
+        return notif_handle
+
+    def close_cluster_notify_port(self, notif_handle):
+        # Always returns True.
+        clusapi.CloseClusterNotifyPort(notif_handle)
+
+    def get_cluster_notify(self, notif_handle, notif_key, timeout_ms=0):
+        filter_type = ctypes.c_ulong()
+        obj_name_buff_sz = ctypes.c_ulong(self._MAX_NODE_NAME)
+        obj_name_buff = (ctypes.c_wchar * obj_name_buff_sz.value)()
+
+        self._run_and_check_output(
+            clusapi.GetClusterNotify,
+            notif_handle,
+            ctypes.byref(ctypes.c_ulong(notif_key)),
+            ctypes.byref(filter_type),
+            ctypes.byref(obj_name_buff),
+            ctypes.byref(obj_name_buff_sz),
+            timeout_ms)
+
+        event = {'cluster_object_name': obj_name_buff.value,
+                 'cluster_change': filter_type.value}
+        return event

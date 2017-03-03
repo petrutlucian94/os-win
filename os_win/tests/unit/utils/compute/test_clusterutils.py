@@ -286,12 +286,10 @@ class ClusterUtilsTestCase(test_base.OsWinBaseTestCase):
                                            self._FAKE_HOST,
                                            mock.sentinel.timeout)
 
-        exp_valid_transition_states = [constants.CLUSTER_GROUP_PENDING]
         mock_migrate_vm.assert_called_once_with(
             self._FAKE_VM_NAME, self._FAKE_HOST,
             self._clusterutils._LIVE_MIGRATION_TYPE,
             constants.CLUSTER_GROUP_ONLINE,
-            exp_valid_transition_states,
             mock.sentinel.timeout)
 
     @mock.patch.object(_clusapi_utils, 'DWORD')
@@ -305,7 +303,6 @@ class ClusterUtilsTestCase(test_base.OsWinBaseTestCase):
                         self._FAKE_HOST,
                         self._clusterutils._LIVE_MIGRATION_TYPE,
                         constants.CLUSTER_GROUP_ONLINE,
-                        mock.sentinel.valid_transition_states,
                         mock.sentinel.timeout)
 
         if raised_exc:
@@ -353,7 +350,6 @@ class ClusterUtilsTestCase(test_base.OsWinBaseTestCase):
             self._FAKE_VM_NAME, exp_clus_group_h,
             constants.CLUSTER_GROUP_ONLINE,
             self._FAKE_HOST,
-            mock.sentinel.valid_transition_states,
             mock.sentinel.timeout)
 
         self._clusapi.close_cluster_group.assert_called_once_with(
@@ -366,7 +362,6 @@ class ClusterUtilsTestCase(test_base.OsWinBaseTestCase):
     def test_wait_for_clus_group_state_failed(self, mock_time):
         desired_host = self._FAKE_HOST
         desired_state = constants.CLUSTER_GROUP_ONLINE
-        valid_transition_states = [constants.CLUSTER_GROUP_PENDING]
 
         group_states = [dict(owner_node=desired_host,
                              state=constants.CLUSTER_GROUP_PENDING),
@@ -388,7 +383,6 @@ class ClusterUtilsTestCase(test_base.OsWinBaseTestCase):
                           mock.sentinel.group_handle,
                           desired_state,
                           desired_host,
-                          valid_transition_states,
                           timeout=10)
 
         self._clusapi.get_cluster_group_state.assert_has_calls(
@@ -408,7 +402,6 @@ class ClusterUtilsTestCase(test_base.OsWinBaseTestCase):
             mock.sentinel.group_handle,
             desired_state,
             desired_host,
-            [],
             timeout=10)
 
         self._clusapi.get_cluster_group_state.assert_called_once_with(
