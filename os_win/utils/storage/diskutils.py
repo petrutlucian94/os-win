@@ -18,6 +18,7 @@ import ctypes
 import os
 import re
 import sys
+import threading
 
 from oslo_log import log as logging
 
@@ -34,8 +35,9 @@ LOG = logging.getLogger(__name__)
 
 
 class DiskUtils(baseutils.BaseUtils):
-
     _wmi_namespace = 'root/microsoft/windows/storage'
+
+    _rescan_lock = threading.Lock()
 
     def __init__(self):
         self._conn_storage = self._get_wmi_conn(self._wmi_namespace)
@@ -67,9 +69,30 @@ class DiskUtils(baseutils.BaseUtils):
         err_msg = _("Could not find device number for device: %s")
         raise exceptions.DiskNotFound(err_msg % device_name)
 
+    def rescan_disks(self, merge_requests=True):
+        """Perform a disk rescan.
+
+        :param merge_requests: If this flag is set and a disk rescan is
+                               already pending, we'll just wait for it to
+                               finish without issuing a new rescan request.
+        """
+        if merge_requests:
+            rescan_pending = self._rescan_lock.locked()
+            if rescan_pending:
+                LOG.debug("A disk rescan is already pending. "
+                          "Waiting for it to complete.")
+
+            with self._rescan_lock:
+                if not rescan_pending:
+                    self._rescan_disks()
+        else:
+            self._rescan_disks()
+
     @_utils.retry_decorator(exceptions=(exceptions.x_wmi,
                                         exceptions.OSWinException))
-    def rescan_disks(self):
+    def _rescan_disks(self):
+        LOG.debug("Rescanning disks.")
+
         ret = self._conn_storage.Msft_StorageSetting.UpdateHostStorageCache()
 
         if isinstance(ret, collections.Iterable):
@@ -78,6 +101,8 @@ class DiskUtils(baseutils.BaseUtils):
         if ret:
             err_msg = _("Rescanning disks failed. Error code: %s.")
             raise exceptions.OSWinException(err_msg % ret)
+
+        LOG.debug("Finished rescanning disks.")
 
     def get_disk_capacity(self, path, ignore_errors=False):
         norm_path = os.path.abspath(path)
