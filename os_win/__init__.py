@@ -27,3 +27,7 @@ if sys.platform == 'win32':
     import wmi
     # We need to make sure that WMI uses the unpatched threading module.
     wmi.threading = patcher.original('threading')
+
+    # The following will set the argument and return value types for the
+    # foreign functions used throught os_win using ctypes.
+    from os_win.utils.ctypedefs import *  # noqa
