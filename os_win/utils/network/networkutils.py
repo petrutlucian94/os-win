@@ -23,15 +23,20 @@ import re
 
 from eventlet import patcher
 from eventlet import tpool
+from oslo_log import log as logging
 from oslo_utils import units
 import six
 
 from os_win._i18n import _
 from os_win import constants
+from os_win import conf
 from os_win import exceptions
 from os_win.utils import _wqlutils
 from os_win.utils import baseutils
 from os_win.utils import jobutils
+
+CONF = conf.CONF
+LOG = logging.getLogger(__name__)
 
 _PORT_PROFILE_ATTR_MAP = {
     "profile_id": "ProfileId",
@@ -105,8 +110,13 @@ class NetworkUtils(baseutils.BaseUtilsVirt):
     def __init__(self):
         super(NetworkUtils, self).__init__()
         self._jobutils = jobutils.JobUtils()
+        self._enable_cache = CONF.os_win.cache_wmi_objects
 
     def init_caches(self):
+        if not self._enable_cache:
+            LOG.warning('WMI caching is disabled.')
+            return
+
         for vswitch in self._conn.Msvm_VirtualEthernetSwitch():
             self._switches[vswitch.ElementName] = vswitch
 
@@ -150,6 +160,9 @@ class NetworkUtils(baseutils.BaseUtilsVirt):
                 self._bandwidth_sds[match.group()] = bandwidth_sd
 
     def update_cache(self):
+        if not self._enable_cache:
+            return
+
         # map between switch port ID and switch port WMI object.
         self._switch_ports.clear()
         for port in self._conn.Msvm_EthernetPortAllocationSettingData():
@@ -168,7 +181,7 @@ class NetworkUtils(baseutils.BaseUtilsVirt):
             return ext_port.ElementName
 
     def _get_vswitch(self, vswitch_name):
-        if vswitch_name in self._switches:
+        if self._enable_cache and vswitch_name in self._switches:
             return self._switches[vswitch_name]
 
         vswitch = self._conn.Msvm_VirtualEthernetSwitch(
@@ -548,7 +561,7 @@ class NetworkUtils(baseutils.BaseUtilsVirt):
             port_alloc, self._bandwidth_sds, self._PORT_BANDWIDTH_SET_DATA)
 
     def _get_setting_data_from_port_alloc(self, port_alloc, cache, data_class):
-        if port_alloc.InstanceID in cache:
+        if self._enable_cache and port_alloc.InstanceID in cache:
             return cache[port_alloc.InstanceID]
 
         setting_data = self._get_first_item(
@@ -561,7 +574,7 @@ class NetworkUtils(baseutils.BaseUtilsVirt):
 
     def _get_switch_port_allocation(self, switch_port_name, create=False,
                                     expected=True):
-        if switch_port_name in self._switch_ports:
+        if self._enable_cache and switch_port_name in self._switch_ports:
             return self._switch_ports[switch_port_name], True
 
         switch_port, found = self._get_setting_data(
@@ -726,7 +739,7 @@ class NetworkUtils(baseutils.BaseUtilsVirt):
         otherwise it fetches and caches from the port's associated class.
         """
 
-        if port.ElementName in self._sg_acl_sds:
+        if self._enable_cache and port.ElementName in self._sg_acl_sds:
             return self._sg_acl_sds[port.ElementName]
 
         acls = _wqlutils.get_element_associated_class(

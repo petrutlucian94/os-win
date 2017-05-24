@@ -20,6 +20,9 @@ os_win_opts = [
                default='hbaapi.dll',
                help='Fibre Channel hbaapi library path. If no custom hbaapi '
                     'library is requested, the default one will be used.'),
+    cfg.BoolOpt('cache_wmi_objects',
+               default=True,
+               help='Caches WMI objects in order to increase performance.'),
 ]
 
 CONF = cfg.CONF

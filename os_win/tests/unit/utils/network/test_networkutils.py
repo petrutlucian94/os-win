@@ -60,6 +60,14 @@ class NetworkUtilsTestCase(test_base.OsWinBaseTestCase):
         self.netutils._conn_attr = mock.MagicMock()
         self.netutils._jobutils = mock.MagicMock()
 
+    def test_init_caches_disabled(self):
+        self.netutils._enable_cache = False
+        self.netutils._switches = {}
+        self.netutils.init_caches()
+
+        self.netutils._conn.Msvm_VirtualEthernetSwitch.assert_not_called()
+        self.assertEqual({}, self.netutils._switches)
+
     def test_init_caches(self):
         self.netutils._switches = {}
         self.netutils._switch_ports = {}
@@ -98,6 +106,15 @@ class NetworkUtilsTestCase(test_base.OsWinBaseTestCase):
         self.assertEqual([mock_sd], list(self.netutils._vsid_sds.values()))
         self.assertEqual([mock_sd],
                          list(self.netutils._bandwidth_sds.values()))
+
+    def test_update_cache_disabled(self):
+        self.netutils._enable_cache = False
+        self.netutils._switch_ports = {}
+        self.netutils.update_cache()
+
+        conn = self.netutils._conn
+        conn.Msvm_EthernetPortAllocationSettingData.assert_not_called()
+        self.assertEqual({}, self.netutils._switch_ports)
 
     def test_update_cache(self):
         self.netutils._switch_ports[mock.sentinel.other] = mock.sentinel.port
@@ -301,14 +318,27 @@ class NetworkUtilsTestCase(test_base.OsWinBaseTestCase):
         self.assertNotIn(self._FAKE_PORT_NAME, self.netutils._switch_ports)
         self.assertNotIn(mock_sw_port.InstanceID, self.netutils._vlan_sds)
 
-    def test_get_vswitch(self):
+    def _check_get_vswitch(self, expected_vswitch):
         self.netutils._conn.Msvm_VirtualEthernetSwitch.return_value = [
             self._FAKE_VSWITCH]
         vswitch = self.netutils._get_vswitch(self._FAKE_VSWITCH_NAME)
 
-        self.assertEqual({self._FAKE_VSWITCH_NAME: self._FAKE_VSWITCH},
+        self.assertEqual({self._FAKE_VSWITCH_NAME: expected_vswitch},
                          self.netutils._switches)
-        self.assertEqual(self._FAKE_VSWITCH, vswitch)
+        self.assertEqual(expected_vswitch, vswitch)
+
+    def test_get_vswitch(self):
+        self._check_get_vswitch(self._FAKE_VSWITCH)
+
+    @ddt.data(True, False)
+    def test_get_vswitch_cache(self, enable_cache):
+        self.netutils._enable_cache = enable_cache
+        self.netutils._switches = {
+            self._FAKE_VSWITCH_NAME: mock.sentinel.vswitch}
+
+        expected_vswitch = (mock.sentinel.vswitch if enable_cache
+                            else self._FAKE_VSWITCH)
+        self._check_get_vswitch(expected_vswitch)
 
     def test_get_vswitch_not_found(self):
         self.netutils._switches = {}
@@ -645,8 +675,11 @@ class NetworkUtilsTestCase(test_base.OsWinBaseTestCase):
 
         self.assertEqual(mock.sentinel.sd_object, result)
 
+    @ddt.data(True, False)
     @mock.patch.object(_wqlutils, 'get_element_associated_class')
-    def test_get_setting_data_from_port_alloc(self, mock_get_elem_assoc_cls):
+    def test_get_setting_data_from_port_alloc(self, enable_cache,
+                                              mock_get_elem_assoc_cls):
+        self.netutils._enable_cache = enable_cache
         sd_object = mock.MagicMock()
         mock_port = mock.MagicMock(InstanceID=mock.sentinel.InstanceID)
         mock_get_elem_assoc_cls.return_value = [sd_object]
@@ -670,8 +703,10 @@ class NetworkUtilsTestCase(test_base.OsWinBaseTestCase):
         self.assertEqual(mock.sentinel.port, port)
         self.assertTrue(found)
 
+    @ddt.data(True, False)
     @mock.patch.object(networkutils.NetworkUtils, '_get_setting_data')
-    def test_get_switch_port_allocation(self, mock_get_set_data):
+    def test_get_switch_port_allocation(self, enable_cache, mock_get_set_data):
+        self.netutils._enable_cache = enable_cache
         mock_get_set_data.return_value = (mock.sentinel.port, True)
 
         port, found = self.netutils._get_switch_port_allocation(
@@ -852,8 +887,11 @@ class NetworkUtilsTestCase(test_base.OsWinBaseTestCase):
 
         self.assertEqual([mock.sentinel.fake_acl], acls)
 
+    @ddt.data(True, False)
     @mock.patch.object(_wqlutils, 'get_element_associated_class')
-    def test_get_port_security_acls(self, mock_get_elem_assoc_cls):
+    def test_get_port_security_acls(self, enable_cache,
+                                    mock_get_elem_assoc_cls):
+        self.netutils._enable_cache = enable_cache
         self.netutils._sg_acl_sds = {}
         mock_port = mock.MagicMock()
         mock_get_elem_assoc_cls.return_value = [mock.sentinel.fake_acl]
