@@ -659,6 +659,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
                                                              Reason=reason)
         self._jobutils.check_ret_val(ret_val, None)
 
+    @_utils.retry_decorator(exceptions=exceptions.HyperVException)
     def set_vm_state(self, vm_name, req_state):
         """Set the desired state of the VM."""
 
@@ -726,6 +727,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
         (job_path, ret_val) = self._vs_man_svc.DestroySystem(vm.path_())
         self._jobutils.check_ret_val(ret_val, job_path)
 
+    @_utils.retry_decorator(exceptions=exceptions.HyperVException)
     def take_vm_snapshot(self, vm_name, snapshot_name=None):
         vm = self._lookup_vm_check(vm_name, as_vssd=False)
         vs_snap_svc = self._compat_conn.Msvm_VirtualSystemSnapshotService()[0]
