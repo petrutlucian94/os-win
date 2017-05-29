@@ -27,6 +27,7 @@ import uuid
 from eventlet import patcher
 from eventlet import tpool
 from oslo_log import log as logging
+from oslo_utils import excutils
 from oslo_utils import uuidutils
 from six.moves import range  # noqa
 
@@ -659,6 +660,7 @@ class VMUtils(baseutils.BaseUtilsVirt):
                                                              Reason=reason)
         self._jobutils.check_ret_val(ret_val, None)
 
+    @_utils.retry_decorator(exceptions=exceptions.HyperVException)
     def set_vm_state(self, vm_name, req_state):
         """Set the desired state of the VM."""
 
@@ -726,24 +728,33 @@ class VMUtils(baseutils.BaseUtilsVirt):
         (job_path, ret_val) = self._vs_man_svc.DestroySystem(vm.path_())
         self._jobutils.check_ret_val(ret_val, job_path)
 
+    @_utils.retry_decorator(exceptions=exceptions.HyperVException)
     def take_vm_snapshot(self, vm_name, snapshot_name=None):
-        vm = self._lookup_vm_check(vm_name, as_vssd=False)
-        vs_snap_svc = self._compat_conn.Msvm_VirtualSystemSnapshotService()[0]
+        snap_path = None
+        try:
+            vm = self._lookup_vm_check(vm_name, as_vssd=False)
+            vs_snap_cls = self._compat_conn.Msvm_VirtualSystemSnapshotService
+            vs_snap_svc = vs_snap_cls()[0]
 
-        (job_path, snp_setting_data, ret_val) = vs_snap_svc.CreateSnapshot(
-            AffectedSystem=vm.path_(),
-            SnapshotType=self._SNAPSHOT_FULL)
+            (job_path, snp_setting_data, ret_val) = vs_snap_svc.CreateSnapshot(
+                AffectedSystem=vm.path_(),
+                SnapshotType=self._SNAPSHOT_FULL)
+            snap_path = snp_setting_data.path_()
 
-        job = self._jobutils.check_ret_val(ret_val, job_path)
-        snp_setting_data = job.associators(
-            wmi_result_class=self._VIRTUAL_SYSTEM_SETTING_DATA_CLASS,
-            wmi_association_class=self._AFFECTED_JOB_ELEMENT_CLASS)[0]
+            job = self._jobutils.check_ret_val(ret_val, job_path)
+            snp_setting_data = job.associators(
+                wmi_result_class=self._VIRTUAL_SYSTEM_SETTING_DATA_CLASS,
+                wmi_association_class=self._AFFECTED_JOB_ELEMENT_CLASS)[0]
 
-        if snapshot_name is not None:
-            snp_setting_data.ElementName = snapshot_name
-            self._modify_virtual_system(snp_setting_data)
+            if snapshot_name is not None:
+                snp_setting_data.ElementName = snapshot_name
+                self._modify_virtual_system(snp_setting_data)
 
-        return snp_setting_data.path_()
+            return snp_setting_data.path_()
+        except exceptions.HyperVException:
+            with excutils.save_and_reraise_exception():
+                if snap_path:
+                    self.remove_vm_snapshot(snap_path)
 
     def get_vm_snapshots(self, vm_name, snapshot_name=None):
         vm = self._lookup_vm_check(vm_name, as_vssd=False)

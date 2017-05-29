@@ -31,6 +31,7 @@ import sys
 from oslo_log import log as logging
 
 from os_win._i18n import _
+from os_win import _utils
 from os_win import constants
 from os_win import exceptions
 from os_win.utils.storage.virtdisk import (
@@ -78,6 +79,8 @@ class VHDUtils(object):
             if cleanup_handle:
                 self._close(cleanup_handle)
 
+    @_utils.retry_decorator(exceptions=exceptions.VHDWin32APIException,
+                            max_sleep_time=5)
     def _open(self, vhd_path,
               open_flag=None,
               open_access_mask=vdisk_const.VIRTUAL_DISK_ACCESS_ALL,
