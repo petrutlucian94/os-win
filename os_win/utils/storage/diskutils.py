@@ -69,7 +69,7 @@ class DiskUtils(baseutils.BaseUtils):
         err_msg = _("Could not find device number for device: %s")
         raise exceptions.DiskNotFound(err_msg % device_name)
 
-    def rescan_disks(self, merge_requests=True):
+    def rescan_disks(self, merge_requests=False):
         """Perform a disk rescan.
 
         :param merge_requests: If this flag is set and a disk rescan is

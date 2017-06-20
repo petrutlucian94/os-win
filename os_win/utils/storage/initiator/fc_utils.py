@@ -56,7 +56,8 @@ class FCUtils(object):
             arg = ctypes.c_char_p(six.b(adapter_name))
         elif adapter_wwn:
             func = hbaapi.HBA_OpenAdapterByWWN
-            arg = fc_struct.HBA_WWN(*adapter_wwn)
+            arg = fc_struct.HBA_WWN()
+            arg.wwn[:] = adapter_wwn
         else:
             err_msg = _("Could not open HBA adapter. "
                         "No HBA name or WWN was specified")
@@ -87,15 +88,24 @@ class FCUtils(object):
 
         return buff.value.decode('utf-8')
 
-    def _get_target_mapping(self, hba_handle):
-        entry_count = 0
+    def _get_target_mapping(self, hba_handle, port_wwn):
+        entry_count = 1
         hba_status = HBA_STATUS_ERROR_MORE_DATA
 
+        hbaapi.HBA_GetFcpTargetMappingV2.argtypes = [ctypes.c_uint32,
+                                                     fc_struct.HBA_WWN,
+                                                     ctypes.c_void_p]
+        hbaapi.HBA_GetFcpTargetMappingV2.restype = ctypes.c_uint32
+
+        port_wwn_struct = fc_struct.HBA_WWN()
+        port_wwn_struct.wwn[:] = port_wwn
+
         while hba_status == HBA_STATUS_ERROR_MORE_DATA:
-            mapping = fc_struct.get_target_mapping_struct(entry_count)
+            mapping = fc_struct.get_target_mapping_struct_v2(entry_count)
             hba_status = self._run_and_check_output(
-                hbaapi.HBA_GetFcpTargetMapping,
+                hbaapi.HBA_GetFcpTargetMappingV2,
                 hba_handle,
+                port_wwn_struct,
                 ctypes.byref(mapping),
                 ignored_error_codes=[HBA_STATUS_ERROR_MORE_DATA])
             entry_count = mapping.NumberOfEntries
@@ -130,8 +140,8 @@ class FCUtils(object):
                 port_attributes = self._get_adapter_port_attributes(
                     hba_handle,
                     port_index)
-                wwnn = self._wwn_array_to_hex_str(port_attributes.NodeWWN)
-                wwpn = self._wwn_array_to_hex_str(port_attributes.PortWWN)
+                wwnn = self._wwn_array_to_hex_str(port_attributes.NodeWWN.wwn)
+                wwpn = self._wwn_array_to_hex_str(port_attributes.PortWWN.wwn)
 
                 hba_port_info = dict(node_name=wwnn,
                                      port_name=wwpn)
@@ -169,22 +179,71 @@ class FCUtils(object):
     def _wwn_array_to_hex_str(self, wwn):
         return ''.join('{:02X}'.format(b) for b in wwn)
 
-    def get_fc_target_mappings(self, node_wwn):
+    def get_fc_target_mappings(self, node_wwn, port_wwn):
         mappings = []
         node_wwn = self._wwn_hex_string_to_array(node_wwn)
+        port_wwn = self._wwn_hex_string_to_array(port_wwn)
 
         with self._get_hba_handle(adapter_wwn=node_wwn) as hba_handle:
-            fcp_mappings = self._get_target_mapping(hba_handle)
+            fcp_mappings = self._get_target_mapping(hba_handle, port_wwn)
             for entry in fcp_mappings.Entries:
-                wwnn = self._wwn_array_to_hex_str(entry.FcpId.NodeWWN)
-                wwpn = self._wwn_array_to_hex_str(entry.FcpId.PortWWN)
+                wwnn = self._wwn_array_to_hex_str(entry.FcpId.NodeWWN.wwn)
+                wwpn = self._wwn_array_to_hex_str(entry.FcpId.PortWWN.wwn)
                 mapping = dict(node_name=wwnn,
                                port_name=wwpn,
                                device_name=entry.ScsiId.OSDeviceName,
-                               lun=entry.ScsiId.ScsiOSLun)
+                               os_lun=entry.ScsiId.ScsiOSLun,
+                               fcp_lun=entry.FcpId.FcpLun,
+                               luid=self._wwn_array_to_hex_str(bytearray(entry.LUID)))
                 mappings.append(mapping)
         return mappings
 
     @_utils.avoid_blocking_call_decorator
     def refresh_hba_configuration(self):
         hbaapi.HBA_RefreshAdapterConfiguration()
+
+    def _send_scsi_inquiry_v2(self, hba_handle, port_wwn, remote_port_wwn,
+                              lun, cdb_byte1, cdb_byte2):
+        resp_buffer_sz = ctypes.c_uint32(256)
+        resp_buffer = (ctypes.c_ubyte * resp_buffer_sz.value)()
+
+        sense_buffer_sz = ctypes.c_uint32(256)
+        sense_buffer = (ctypes.c_ubyte * sense_buffer_sz.value)()
+
+        scsi_status = ctypes.c_ubyte()
+
+        hbaapi.HBA_ScsiInquiryV2.argtypes = [
+            ctypes.c_uint32, fc_struct.HBA_WWN,
+            fc_struct.HBA_WWN, ctypes.c_uint64,
+            ctypes.c_uint8, ctypes.c_uint8,
+            ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+
+        port_wwn_struct = fc_struct.HBA_WWN()
+        port_wwn_struct.wwn[:] = port_wwn
+
+        remote_port_wwn_struct = fc_struct.HBA_WWN()
+        remote_port_wwn_struct.wwn[:] = remote_port_wwn
+
+        self._run_and_check_output(
+            hbaapi.HBA_ScsiInquiryV2,
+            hba_handle,
+            port_wwn_struct,
+            remote_port_wwn_struct,
+            ctypes.c_uint64(lun),
+            ctypes.c_uint8(cdb_byte1),
+            ctypes.c_uint8(cdb_byte2),
+            ctypes.byref(resp_buffer),
+            ctypes.byref(resp_buffer_sz),
+            ctypes.byref(scsi_status),
+            ctypes.byref(sense_buffer),
+            ctypes.byref(sense_buffer_sz))
+
+        return resp_buffer
+
+    def _get_scsi_unique_id(self, hba_handle, port_wwn, remote_port_wwn, lun):
+        cdb_byte1 = 1
+        cdb_byte2 = 0x83
+        return self._send_scsi_inquiry_v2(hba_handle, port_wwn,
+                                          remote_port_wwn, lun,
+                                          cdb_byte1, cdb_byte2)

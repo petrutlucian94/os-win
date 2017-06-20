@@ -26,6 +26,10 @@ HBA_FC4Types = ctypes.c_uint32 * 32
 HBA_FCPBindingType = ctypes.c_int
 
 
+class HBA_WWN(ctypes.Structure):
+    _fields_ = [('wwn', ctypes.c_ubyte * 8)]
+
+
 class HBA_PortAttributes(ctypes.Structure):
     _fields_ = [('NodeWWN', HBA_WWN),
                 ('PortWWN', HBA_WWN),
@@ -61,6 +65,14 @@ class HBA_FCPScsiEntry(ctypes.Structure):
     _fields_ = [('ScsiId', HBA_ScsiId),
                 ('FcpId', HBA_FCPId)]
 
+HBA_LUID = ctypes.c_ubyte * 256
+
+
+class HBA_FCPScsiEntryV2(ctypes.Structure):
+    _fields_ = [('ScsiId', HBA_ScsiId),
+                ('FcpId', HBA_FCPId),
+                ('LUID', HBA_LUID)]
+
 
 def get_target_mapping_struct(entry_count=0):
     class HBA_FCPTargetMapping(ctypes.Structure):
@@ -72,6 +84,18 @@ def get_target_mapping_struct(entry_count=0):
             self.Entries = (HBA_FCPScsiEntry * entry_count)()
 
     return HBA_FCPTargetMapping(entry_count)
+
+
+def get_target_mapping_struct_v2(entry_count=0):
+    class HBA_FCPTargetMappingV2(ctypes.Structure):
+        _fields_ = [('NumberOfEntries', ctypes.c_uint32),
+                    ('Entries', HBA_FCPScsiEntryV2 * entry_count)]
+
+        def __init__(self, entry_count):
+            self.NumberOfEntries = entry_count
+            self.Entries = (HBA_FCPScsiEntryV2 * entry_count)()
+
+    return HBA_FCPTargetMappingV2(entry_count)
 
 
 class HBA_AdapterAttributes(ctypes.Structure):
