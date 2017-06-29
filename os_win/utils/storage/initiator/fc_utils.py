@@ -24,6 +24,7 @@ from os_win._i18n import _
 from os_win import _utils
 import os_win.conf
 from os_win import exceptions
+from os_win.utils.storage import diskutils
 from os_win.utils import win32utils
 from os_win.utils.winapi import constants as w_const
 from os_win.utils.winapi import libs as w_lib
@@ -42,6 +43,7 @@ HBA_STATUS_ERROR_MORE_DATA = 7
 class FCUtils(object):
     def __init__(self):
         self._win32_utils = win32utils.Win32Utils()
+        self._diskutils = diskutils.DiskUtils()
 
     def _run_and_check_output(self, *args, **kwargs):
         kwargs['failure_exc'] = exceptions.FCWin32Exception
@@ -199,3 +201,58 @@ class FCUtils(object):
     @_utils.avoid_blocking_call_decorator
     def refresh_hba_configuration(self):
         hbaapi.HBA_RefreshAdapterConfiguration()
+
+    def _send_scsi_inquiry_v2(self, hba_handle, port_wwn, remote_port_wwn,
+                              fcp_lun, cdb_byte1, cdb_byte2):
+        resp_buffer_sz = ctypes.c_uint32(256)
+        resp_buffer = (ctypes.c_ubyte * resp_buffer_sz.value)()
+
+        sense_buffer_sz = ctypes.c_uint32(256)
+        sense_buffer = (ctypes.c_ubyte * sense_buffer_sz.value)()
+
+        scsi_status = ctypes.c_ubyte()
+
+        port_wwn_struct = fc_struct.HBA_WWN()
+        port_wwn_struct.wwn[:] = port_wwn
+
+        remote_port_wwn_struct = fc_struct.HBA_WWN()
+        remote_port_wwn_struct.wwn[:] = remote_port_wwn
+
+        self._run_and_check_output(
+            hbaapi.HBA_ScsiInquiryV2,
+            hba_handle,
+            port_wwn_struct,
+            remote_port_wwn_struct,
+            ctypes.c_uint64(fcp_lun),
+            ctypes.c_uint8(cdb_byte1),
+            ctypes.c_uint8(cdb_byte2),
+            ctypes.byref(resp_buffer),
+            ctypes.byref(resp_buffer_sz),
+            ctypes.byref(scsi_status),
+            ctypes.byref(sense_buffer),
+            ctypes.byref(sense_buffer_sz))
+
+        return resp_buffer
+
+    def _get_scsi_device_id_vpd(self, hba_handle, port_wwn,
+                                remote_port_wwn, fcp_lun):
+        cdb_byte1 = 1
+        cdb_byte2 = 0x83
+        return self._send_scsi_inquiry_v2(hba_handle, port_wwn,
+                                          remote_port_wwn, fcp_lun,
+                                          cdb_byte1, cdb_byte2)
+
+    def get_scsi_device_identifiers(self, node_wwn, port_wwn,
+                                    remote_port_wwn, fcp_lun,
+                                    select_supported_identifiers=True):
+        node_wwn = self._wwn_hex_string_to_array(node_wwn)
+        port_wwn = self._wwn_hex_string_to_array(port_wwn)
+        remote_port_wwn = self._wwn_hex_string_to_array(remote_port_wwn)
+
+        with self._get_hba_handle(adapter_wwn=node_wwn) as hba_handle:
+            vpd_data = self._get_scsi_device_id_vpd(hba_handle, port_wwn,
+                                                    remote_port_wwn, fcp_lun)
+            identifiers = self._diskutils._parse_scsi_page_83(
+                vpd_data,
+                select_supported_identifiers=select_supported_identifiers)
+            return identifiers
