@@ -44,6 +44,8 @@ class ISCSIInitiatorUtilsTestCase(test_base.OsWinBaseTestCase):
         self._initiator._win32utils = mock.Mock()
         self._initiator._diskutils = mock.Mock()
 
+        self._diskutils = self._initiator._diskutils
+
         self._iscsidsc = mock.patch.object(
             iscsi_utils, 'iscsidsc', create=True).start()
 
@@ -728,7 +730,7 @@ class ISCSIInitiatorUtilsTestCase(test_base.OsWinBaseTestCase):
                                   mock_get_iscsi_target_sessions,
                                   mock_get_iscsi_device_from_session,
                                   rescan_disks=False, retry_interval=0):
-        retry_count = 5
+        retry_count = 6
         mock_get_iscsi_target_sessions.return_value = [
             mock.Mock(SessionId=mock.sentinel.session_id)]
 
@@ -736,26 +738,26 @@ class ISCSIInitiatorUtilsTestCase(test_base.OsWinBaseTestCase):
             message='fake_message',
             error_code=1,
             func_name='fake_func')
-        dev_num_side_eff = [None, -1,
-                            mock.sentinel.dev_num,
-                            mock.sentinel.dev_num]
+        dev_num_side_eff = [None, -1] + [mock.sentinel.dev_num] * 3
         dev_path_side_eff = ([mock.sentinel.dev_path] * 2 +
-                             [None] + [mock.sentinel.dev_path])
+                             [None] + [mock.sentinel.dev_path] * 2)
         fake_device = mock.Mock()
         type(fake_device.StorageDeviceNumber).DeviceNumber = (
             mock.PropertyMock(side_effect=dev_num_side_eff))
         type(fake_device).LegacyName = (
             mock.PropertyMock(side_effect=dev_path_side_eff))
 
-        mock_get_dev_side_eff = [None, fake_exc] + [fake_device] * 4
+        mock_get_dev_side_eff = [None, fake_exc] + [fake_device] * 5
         mock_get_iscsi_device_from_session.side_effect = mock_get_dev_side_eff
+        self._diskutils.is_mpio_disk.side_effect = [False, True]
 
         dev_num, dev_path = self._initiator.ensure_lun_available(
             mock.sentinel.target_iqn,
             mock.sentinel.target_lun,
             rescan_attempts=retry_count,
             retry_interval=retry_interval,
-            rescan_disks=rescan_disks)
+            rescan_disks=rescan_disks,
+            ensure_mpio_claimed=True)
 
         self.assertEqual(mock.sentinel.dev_num, dev_num)
         self.assertEqual(mock.sentinel.dev_path, dev_path)
@@ -765,11 +767,13 @@ class ISCSIInitiatorUtilsTestCase(test_base.OsWinBaseTestCase):
         mock_get_iscsi_device_from_session.assert_has_calls(
             [mock.call(mock.sentinel.session_id,
                        mock.sentinel.target_lun)] * retry_count)
+        self._diskutils.is_mpio_disk.assert_has_calls(
+            [mock.call(mock.sentinel.dev_num)] * 2)
 
         expected_rescan_count = retry_count if rescan_disks else 0
         self.assertEqual(
             expected_rescan_count,
-            self._initiator._diskutils.rescan_disks.call_count)
+            self._diskutils.rescan_disks.call_count)
 
         if retry_interval:
             mock_sleep.assert_has_calls(
