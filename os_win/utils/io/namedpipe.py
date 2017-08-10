@@ -36,8 +36,8 @@ class NamedPipeHandler(object):
 
     _MAX_LOG_ROTATE_RETRIES = 5
 
-    def __init__(self, pipe_name, input_queue=None, output_queue=None,
-                 connect_event=None, log_file=None):
+    def __init__(self, pipe_name=None, input_queue=None, output_queue=None,
+                 connect_event=None, log_file=None, pipe_handle=None):
         self._pipe_name = pipe_name
         self._input_queue = input_queue
         self._output_queue = output_queue
@@ -46,7 +46,8 @@ class NamedPipeHandler(object):
         self._connect_event = connect_event
         self._stopped = threading.Event()
         self._workers = []
-        self._pipe_handle = None
+        self._pipe_handle = pipe_handle
+        self._ext_handle = bool(pipe_handle)
         self._lock = threading.Lock()
 
         self._ioutils = ioutils.IOUtils()
@@ -55,7 +56,8 @@ class NamedPipeHandler(object):
 
     def start(self):
         try:
-            self._open_pipe()
+            if not self._ext_handle:
+                self._open_pipe()
 
             if self._log_file_path:
                 self._log_file_handle = open(self._log_file_path, 'ab', 1)
@@ -76,6 +78,7 @@ class NamedPipeHandler(object):
                    {'pipe_name': self._pipe_name,
                     'err': err})
             LOG.error(msg)
+            print(msg)
             self.stop()
             raise exceptions.OSWinException(msg)
 
@@ -102,7 +105,8 @@ class NamedPipeHandler(object):
         self._workers = []
 
     def _cleanup_handles(self):
-        self._close_pipe()
+        if not self._ext_handle:
+            self._close_pipe()
 
         if self._log_file_handle:
             self._log_file_handle.close()
@@ -184,7 +188,7 @@ class NamedPipeHandler(object):
 
                 func(self._pipe_handle, buff, num_bytes,
                      overlapped_structure, completion_routine)
-        except Exception:
+        except Exception as ex:
             self._stopped.set()
         finally:
             with self._lock:
@@ -208,6 +212,16 @@ class NamedPipeHandler(object):
             self._ioutils.write_buffer_data(self._w_buffer, data)
             return len(data)
         return 0
+
+    def blocking_write(self, data):
+        # TODO: use a lock for this operation, split the data
+        # if larger than our buffer
+        self._ioutils.write_buffer_data(self._w_buffer, data)
+        self._ioutils.write(self._pipe_handle,
+                            self._w_buffer,
+                            len(data),
+                            self._w_overlapped,
+                            self._w_completion_routine)
 
     def _write_to_log(self, data):
         if self._stopped.isSet():
