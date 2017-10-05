@@ -15,6 +15,7 @@
 
 import ctypes
 
+from os_win.utils.winapi import constants as w_const
 from os_win.utils.winapi import wintypes
 
 lib_handle = None
@@ -195,7 +196,7 @@ class TAKE_SNAPSHOT_VHDSET_PARAMETERS_V1(ctypes.Structure):
                 ('SnapshotId', wintypes.GUID)]
 
     def __init__(self, *args, **kwargs):
-        self.Version = vdisk_const.TAKE_SNAPSHOT_VHDSET_VERSION_1
+        self.Version = w_const.TAKE_SNAPSHOT_VHDSET_VERSION_1
         super(TAKE_SNAPSHOT_VHDSET_PARAMETERS_V1, self).__init__(
             *args, **kwargs)
 

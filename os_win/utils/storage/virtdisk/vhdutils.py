@@ -114,8 +114,8 @@ class VHDUtils(object):
         device_id = self._get_vhd_device_id(vhd_path)
 
         vst = vdisk_struct.VIRTUAL_STORAGE_TYPE(
-            DeviceId=device_id,
-            VendorId=w_const.VIRTUAL_STORAGE_TYPE_VENDOR_MICROSOFT)
+            DeviceId=0,
+            VendorId=wintypes.GUID())
         handle = wintypes.HANDLE()
 
         self._run_and_check_output(virtdisk.OpenVirtualDisk,
@@ -239,12 +239,18 @@ class VHDUtils(object):
 
         open_flag = (w_const.OPEN_VIRTUAL_DISK_FLAG_NO_PARENTS
                      if not open_parents else 0)
-        open_access_mask = (w_const.VIRTUAL_DISK_ACCESS_GET_INFO |
-                            w_const.VIRTUAL_DISK_ACCESS_DETACH)
+        open_access_mask = w_const.VIRTUAL_DISK_ACCESS_NONE
+
+        open_params = vdisk_struct.OPEN_VIRTUAL_DISK_PARAMETERS()
+        open_params.Version = w_const.OPEN_VIRTUAL_DISK_VERSION_2
+        open_params.Version2.GetInfoOnly = 1
+        open_params.Version2.ReadOnly = 1
+
         handle = self._open(
             vhd_path,
             open_flag=open_flag,
-            open_access_mask=open_access_mask)
+            open_access_mask=open_access_mask,
+            open_params=open_params)
 
         try:
             for member in info_members:
@@ -549,8 +555,25 @@ class VHDUtils(object):
         os.rename(tmp_path, vhd_path)
 
     def take_vhd_set_snapshot(self, vhd_path):
-        handle = self._open(vhd_path)
+        open_params = vdisk_struct.OPEN_VIRTUAL_DISK_PARAMETERS()
+        open_params.Version = w_const.OPEN_VIRTUAL_DISK_VERSION_2
+        open_params.Version2.GetInfoOnly = False
+
+        guid = wintypes.GUID(
+            Data1=0xff984aec,
+            Data2=0xa0e9,
+            Data3=0xa7e9,
+            Data4=(wintypes.BYTE * 8)(0xa0, 0x1f, 0x71, 0x41,
+                                      0x5a, 0x66, 0x34, 0x5b))
+
+        handle = self._open(
+            vhd_path,
+            open_flag=w_const.OPEN_VIRTUAL_DISK_FLAG_NO_PARENTS,
+            open_access_mask=0,
+            open_params=open_params)
         params = vdisk_struct.TAKE_SNAPSHOT_VHDSET_PARAMETERS_V1()
+        params.Version = 1
+        params.SnapshotId = guid
         self._run_and_check_output(virtdisk.TakeSnapshotVhdSet,
                                    handle,
                                    ctypes.byref(params),
