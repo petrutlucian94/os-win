@@ -81,9 +81,9 @@ class JobUtils(baseutils.BaseUtilsVirt):
         job_wmi_path = job_path.replace('\\', '/')
         job = self._get_wmi_obj(job_wmi_path)
 
-        while not self._is_job_completed(job):
-            time.sleep(0.1)
-            job = self._get_wmi_obj(job_wmi_path)
+        with WMIJobStateListener(job, self._conn) as listener:
+            while not self._is_job_completed(job):
+                job = listener.wait()
 
         job_state = job.JobState
         err_code = job.ErrorCode
@@ -231,3 +231,38 @@ class JobUtils(baseutils.BaseUtilsVirt):
         (job_path, ret_val) = self._vs_man_svc.RemoveFeatureSettings(
             FeatureSettings=[f.path_() for f in virt_features])
         self.check_ret_val(ret_val, job_path)
+
+
+class WMIJobStateListener(object):
+    _listener = None
+
+    def __init__(self, job, wmi_conn):
+        self._job = job
+        self._conn = wmi_conn
+
+    def __enter__(self):
+        query = (
+            "SELECT JobState, TargetInstance "
+            "FROM __InstanceModificationEvent WITHIN 2 "
+            "WHERE TargetInstance ISA '%(class_name)s' "
+            "AND TargetInstance.JobState != PreviousInstance.JobState "
+            "AND TargetInstance.InstanceId = '%(job_id)s'") % dict(
+                class_name=self._job.get_class_name(),
+                job_id=self._job.InstanceId)
+
+        self._listener = self._conn.watch_for(query)
+        return self
+
+    def wait(self, timeout_ms=None):
+        try:
+            return self._listener(timeout_ms)
+        except wmi.x_wmi_timed_out:
+            raise exception.Timeout()
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
+    def close(self):
+        if self._listener:
+            # self._listener.close()
+            self._listener = None
