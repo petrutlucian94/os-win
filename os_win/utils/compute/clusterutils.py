@@ -17,7 +17,9 @@
 Utility class for VM related operations on Hyper-V Clusters.
 """
 
+import contextlib
 import ctypes
+import functools
 import re
 import sys
 import threading
@@ -49,7 +51,6 @@ class ClusterUtils(baseutils.BaseUtils):
 
     _VM_BASE_NAME = 'Virtual Machine %s'
     _VM_TYPE = 'Virtual Machine'
-    _VM_GROUP_TYPE = 111
 
     _MS_CLUSTER_NAMESPACE = '//%s/root/MSCluster'
 
@@ -63,12 +64,35 @@ class ClusterUtils(baseutils.BaseUtils):
     _WMI_EVENT_TIMEOUT_MS = 100
     _WMI_EVENT_CHECK_INTERVAL = 2
 
+    _CLUSTER_HANDLE = 0
+    _NODE_HANDLE = 1
+    _GROUP_HANDLE = 2
+    _RESOURCE_HANDLE = 3
+    _ENUM_HANDLE = 4
+
+    _HANDLE_TYPES = [
+        _CLUSTER_HANDLE, _NODE_HANDLE, _GROUP_HANDLE, _RESOURCE_HANDLE,
+        _ENUM_HANDLE
+    ]
+
     def __init__(self, host='.'):
         self._instance_name_regex = re.compile('Virtual Machine (.*)')
         self._clusapi_utils = _clusapi_utils.ClusApiUtils()
 
+        self._set_open_helpers()
+
         if sys.platform == 'win32':
             self._init_hyperv_conn(host)
+
+    def _set_open_helpers(self):
+        self._open_cluster_group = functools.partial(
+            self._open_cluster, handle_type=self._GROUP_HANDLE)
+        self._open_cluster_resource = functools.partial(
+            self._open_cluster, handle_type=self._RESOURCE_HANDLE)
+        self._open_cluster_node = functools.partial(
+            self._open_cluster, handle_type=self._NODE_HANDLE)
+        self._open_cluster_enum = functools.partial(
+            self._open_cluster, handle_type=self._ENUM_HANDLE)
 
     def _init_hyperv_conn(self, host):
         try:
@@ -104,17 +128,13 @@ class ClusterUtils(baseutils.BaseUtils):
         return self._this_node
 
     def _get_cluster_nodes(self):
-        cluster_assoc = self._conn_cluster.MSCluster_ClusterToNode(
-            Antecedent=self._cluster.path_())
-        return [x.Dependent for x in cluster_assoc]
+        return self.cluster_enum(w_const.CLUSTER_ENUM_NODE)
 
     def _get_vm_groups(self):
-        assocs = self._conn_cluster.MSCluster_ClusterToResourceGroup(
-            GroupComponent=self._cluster.path_())
-        resources = [a.PartComponent for a in assocs]
-        return (r for r in resources if
-                hasattr(r, 'GroupType') and
-                r.GroupType == self._VM_GROUP_TYPE)
+        for r in self.cluster_enum(w_const.CLUSTER_ENUM_GROUP):
+            group_type = self.get_cluster_group_type(r['name'])
+            if group_type == w_const.ClusGroupTypeVirtualMachine:
+                yield r
 
     def _lookup_vm_group_check(self, vm_name):
         vm = self._lookup_vm_group(vm_name)
@@ -125,16 +145,6 @@ class ClusterUtils(baseutils.BaseUtils):
     def _lookup_vm_group(self, vm_name):
         return self._lookup_res(self._conn_cluster.MSCluster_ResourceGroup,
                                 vm_name)
-
-    def _lookup_vm_check(self, vm_name):
-        vm = self._lookup_vm(vm_name)
-        if not vm:
-            raise exceptions.HyperVVMNotFoundException(vm_name=vm_name)
-        return vm
-
-    def _lookup_vm(self, vm_name):
-        vm_name = self._VM_BASE_NAME % vm_name
-        return self._lookup_res(self._conn_cluster.MSCluster_Resource, vm_name)
 
     def _lookup_res(self, resource_source, res_name):
         res = resource_source(Name=res_name)
@@ -152,13 +162,15 @@ class ClusterUtils(baseutils.BaseUtils):
         return [n.Name for n in nodes]
 
     def get_vm_host(self, vm_name):
-        return self._lookup_vm_group_check(vm_name).OwnerNode
+        with self._open_cluster_group(vm_name) as group_handle:
+            state_info = self._get_cluster_group_state(group_handle)
+            return state_info['owner_node']
 
     def list_instances(self):
-        return [r.Name for r in self._get_vm_groups()]
+        return [r['name'] for r in self._get_vm_groups()]
 
     def list_instance_uuids(self):
-        return [r.Id for r in self._get_vm_groups()]
+        return [r['id'] for r in self._get_vm_groups()]
 
     def add_vm_to_cluster(self, vm_name, max_failover_count=1,
                           failover_period=6, auto_failback=True):
@@ -190,19 +202,106 @@ class ClusterUtils(baseutils.BaseUtils):
         vm_group.put()
 
     def bring_online(self, vm_name):
-        vm = self._lookup_vm_check(vm_name)
-        vm.BringOnline()
+        with self._open_cluster_group(vm_name) as group_handle:
+            self._clusapi_utils.online_cluster_group(group_handle)
 
     def take_offline(self, vm_name):
-        vm = self._lookup_vm_check(vm_name)
-        vm.TakeOffline()
+        with self._open_cluster_group(vm_name) as group_handle:
+            self._clusapi_utils.offline_cluster_group(group_handle)
 
     def delete(self, vm_name):
-        vm = self._lookup_vm_group_check(vm_name)
-        vm.DestroyGroup(self._DESTROY_GROUP)
+        with self._open_cluster_group(vm_name) as group_handle:
+            self._clusapi_utils.destroy_cluster_group(group_handle)
+
+    def _check_handle_type(self, handle_type):
+        if handle_type not in self._HANDLE_TYPES:
+            err_msg = _("Invalid cluster handle type: %(handle_type)s. "
+                        "Allowed handle types: %(allowed_types)s.")
+            raise exceptions.Invalid(
+                err_msg % dict(handle_type=handle_type,
+                               allowed_types=self._HANDLE_TYPES))
+
+    def _close_handle(self, handle, handle_type):
+        self._check_handle_type(handle_type)
+
+        if not handle:
+            return
+
+        cutils = self._clusapi_utils
+        helper_map = {
+            self._CLUSTER_HANDLE: cutils.close_cluster,
+            self._RESOURCE_HANDLE: cutils.close_cluster_resource,
+            self._GROUP_HANDLE: cutils.close_cluster_group,
+            self._NODE_HANDLE: cutils.close_cluster_node,
+            self._ENUM_HANDLE: cutils.close_cluster_enum,
+        }
+        helper_map[handle_type](handle)
+
+    @contextlib.contextmanager
+    def _open_cluster(self, name=None,
+                      handle_type=_CLUSTER_HANDLE,
+                      cluster_handle=None):
+        self._check_handle_type(handle_type)
+
+        ext_cluster_handle = cluster_handle is not None
+        handle = None
+        try:
+            # We'll accept a cluster handle, avoiding creating
+            # unnecessary handles.
+            if not cluster_handle:
+                cluster_handle = self._clusapi_utils.open_cluster()
+
+            cutils = self._clusapi_utils
+            helper_map = {
+                self._CLUSTER_HANDLE: lambda x, y: x,
+                self._RESOURCE_HANDLE: cutils.open_cluster_resource,
+                self._GROUP_HANDLE: cutils.open_cluster_group,
+                self._NODE_HANDLE: cutils.open_cluster_node,
+                self._ENUM_HANDLE: cutils.open_cluster_enum,
+            }
+            handle = helper_map[handle_type](cluster_handle, name)
+
+            yield handle
+        except exceptions.ClusterWin32Exception as win32_ex:
+            if win32_ex.error_code in w_const.CLUSTER_NOT_FOUND_ERROR_CODES:
+                err_msg = _("Could not find the specified cluster object. "
+                            "Object type: %(obj_type)s. "
+                            "Object name: %(name)s.")
+                raise exceptions.ClusterObjectNotFound(
+                    err_msg % dict(obj_type=handle_type,
+                                   name=name))
+            else:
+                raise
+        finally:
+            self._close_handle(handle, handle_type)
+
+            if not ext_cluster_handle:
+                self._close_handle(cluster_handle, self._CLUSTER_HANDLE)
+
+    def cluster_enum(self, object_type):
+        with self._open_cluster_enum(object_type) as enum_handle:
+            object_count = self._clusapi_utils.cluster_get_enum_count(
+                enum_handle)
+            for idx in range(object_count):
+                item = self._clusapi_utils.cluster_enum(enum_handle, idx)
+
+                item_dict = dict(version=item.dwVersion,
+                                 type=item.dwType,
+                                 id=item.lpszId,
+                                 name=item.lpszName)
+                yield item_dict
 
     def vm_exists(self, vm_name):
-        return self._lookup_vm(vm_name) is not None
+        res_name = self._VM_BASE_NAME % vm_name
+        exists = False
+
+        try:
+            with self._open_cluster_resource(res_name):
+                exists = True
+        except exceptions.ClusterObjectNotFound:
+            pass
+
+        return exists
 
     def live_migrate_vm(self, vm_name, new_host, timeout=None):
         self._migrate_vm(vm_name, new_host, self._LIVE_MIGRATION_TYPE,
@@ -227,62 +326,51 @@ class ClusterUtils(baseutils.BaseUtils):
             w_const.CLUSAPI_GROUP_MOVE_QUEUE_ENABLED |
             w_const.CLUSAPI_GROUP_MOVE_HIGH_PRIORITY_START)
 
-        cluster_handle = None
-        group_handle = None
-        dest_node_handle = None
+        with self._open_cluster() as cluster_handle, \
+                self._open_cluster_group(
+                    vm_name,
+                    cluster_handle=cluster_handle) as group_handle, \
+                self._open_cluster_node(
+                    new_host,
+                    cluster_handle=cluster_handle) as dest_node_handle, \
+                _ClusterGroupStateChangeListener(cluster_handle,
+                                                 vm_name) as listener:
+            self._clusapi_utils.move_cluster_group(group_handle,
+                                                   dest_node_handle,
+                                                   flags,
+                                                   prop_list)
+            try:
+                self._wait_for_cluster_group_migration(
+                    listener,
+                    vm_name,
+                    group_handle,
+                    exp_state_after_migr,
+                    timeout)
+            except exceptions.ClusterGroupMigrationTimeOut:
+                with excutils.save_and_reraise_exception() as ctxt:
+                    self._cancel_cluster_group_migration(
+                        listener, vm_name, group_handle,
+                        exp_state_after_migr, timeout)
 
-        try:
-            cluster_handle = self._clusapi_utils.open_cluster()
-            group_handle = self._clusapi_utils.open_cluster_group(
-                cluster_handle, vm_name)
-            dest_node_handle = self._clusapi_utils.open_cluster_node(
-                cluster_handle, new_host)
-
-            with _ClusterGroupStateChangeListener(cluster_handle,
-                                                  vm_name) as listener:
-                self._clusapi_utils.move_cluster_group(group_handle,
-                                                       dest_node_handle,
-                                                       flags,
-                                                       prop_list)
-                try:
-                    self._wait_for_cluster_group_migration(
-                        listener,
-                        vm_name,
-                        group_handle,
-                        exp_state_after_migr,
-                        timeout)
-                except exceptions.ClusterGroupMigrationTimeOut:
-                    with excutils.save_and_reraise_exception() as ctxt:
-                        self._cancel_cluster_group_migration(
-                            listener, vm_name, group_handle,
-                            exp_state_after_migr, timeout)
-
-                        # This is rather unlikely to happen but we're
-                        # covering it out.
-                        try:
-                            self._validate_migration(group_handle,
-                                                     vm_name,
-                                                     exp_state_after_migr,
-                                                     new_host)
-                            LOG.warning(
-                                'Cluster group migration completed '
-                                'successfuly after cancel attempt. '
-                                'Suppressing timeout exception.')
-                            ctxt.reraise = False
-                        except exceptions.ClusterGroupMigrationFailed:
-                            pass
-                else:
-                    self._validate_migration(group_handle,
-                                             vm_name,
-                                             exp_state_after_migr,
-                                             new_host)
-        finally:
-            if group_handle:
-                self._clusapi_utils.close_cluster_group(group_handle)
-            if dest_node_handle:
-                self._clusapi_utils.close_cluster_node(dest_node_handle)
-            if cluster_handle:
-                self._clusapi_utils.close_cluster(cluster_handle)
+                    # This is rather unlikely to happen but we're
+                    # covering it out.
+                    try:
+                        self._validate_migration(group_handle,
+                                                 vm_name,
+                                                 exp_state_after_migr,
+                                                 new_host)
+                        LOG.warning(
+                            'Cluster group migration completed '
+                            'successfuly after cancel attempt. '
+                            'Suppressing timeout exception.')
+                        ctxt.reraise = False
+                    except exceptions.ClusterGroupMigrationFailed:
+                        pass
+            else:
+                self._validate_migration(group_handle,
+                                         vm_name,
+                                         exp_state_after_migr,
+                                         new_host)
 
     def _validate_migration(self, group_handle, group_name,
                             expected_state, expected_node):
@@ -301,24 +389,15 @@ class ClusterUtils(baseutils.BaseUtils):
 
     def cancel_cluster_group_migration(self, group_name, expected_state,
                                        timeout=None):
-        cluster_handle = None
-        group_handle = None
-
-        try:
-            cluster_handle = self._clusapi_utils.open_cluster()
-            group_handle = self._clusapi_utils.open_cluster_group(
-                cluster_handle, group_name)
-
-            with _ClusterGroupStateChangeListener(cluster_handle,
-                                                  group_name) as listener:
-                self._cancel_cluster_group_migration(
-                    listener, group_name, group_handle,
-                    expected_state, timeout)
-        finally:
-            if group_handle:
-                self._clusapi_utils.close_cluster_group(group_handle)
-            if cluster_handle:
-                self._clusapi_utils.close_cluster(cluster_handle)
+        with self._open_cluster() as cluster_handle, \
+                self._open_cluster_group(
+                    group_name,
+                    cluster_handle=cluster_handle) as group_handle, \
+                _ClusterGroupStateChangeListener(cluster_handle,
+                                                 group_name) as listener:
+            self._cancel_cluster_group_migration(
+                listener, group_name, group_handle,
+                expected_state, timeout)
 
     def _cancel_cluster_group_migration(self, event_listener,
                                         group_name, group_handle,
@@ -416,20 +495,28 @@ class ClusterUtils(baseutils.BaseUtils):
             group_name=group_name,
             time_elapsed=time.time() - time_start)
 
+    def get_cluster_node_name(self, node_id):
+        for node in self._get_cluster_nodes():
+            if node['id'] == node_id:
+                return node['name']
+
+        err_msg = _("Could not find any cluster node with id: %d.")
+        raise exceptions.NotFound(err_msg % node_id)
+
+    def get_cluster_group_type(self, group_name):
+        with self._open_cluster_group(group_name) as group_handle:
+            buff, buff_sz = self._clusapi_utils.cluster_group_control(
+                group_handle, w_const.CLUSCTL_GROUP_GET_RO_COMMON_PROPERTIES)
+            return self._clusapi_utils.get_cluster_group_type(
+                ctypes.byref(buff), buff_sz)
+
     def get_cluster_group_state_info(self, group_name):
         """Gets cluster group state info.
 
         :return: a dict containing the following keys:
             ['state', 'migration_queued', 'owner_node']
         """
-        cluster_handle = None
-        group_handle = None
-
-        try:
-            cluster_handle = self._clusapi_utils.open_cluster()
-            group_handle = self._clusapi_utils.open_cluster_group(
-                cluster_handle, group_name)
-
+        with self._open_cluster_group(group_name) as group_handle:
             state_info = self._get_cluster_group_state(group_handle)
             migration_queued = self._is_migration_queued(
                 state_info['status_info'])
@@ -437,11 +524,6 @@ class ClusterUtils(baseutils.BaseUtils):
             return dict(owner_node=state_info['owner_node'],
                         state=state_info['state'],
                         migration_queued=migration_queued)
-        finally:
-            if group_handle:
-                self._clusapi_utils.close_cluster_group(group_handle)
-            if cluster_handle:
-                self._clusapi_utils.close_cluster(cluster_handle)
 
     def _get_cluster_group_state(self, group_handle):
         state_info = self._clusapi_utils.get_cluster_group_state(group_handle)
@@ -519,6 +601,30 @@ class ClusterUtils(baseutils.BaseUtils):
 
         return listener
 
+    def get_vm_owner_change_listener_v2(self):
+        def listener(callback):
+            cluster_handle = self._clusapi_utils.open_cluster()
+            _listener = _ClusterGroupOwnerChangeListener(cluster_handle)
+
+            while True:
+                try:
+                    event = _listener.get()
+                    group_name = event['cluster_object_name']
+                    group_type = self.get_cluster_group_type(group_name)
+                    if group_type != w_const.ClusGroupTypeVirtualMachine:
+                        continue
+
+                    new_node_id = event['parent_id']
+                    new_node_name = self.get_cluster_node_name(new_node_id)
+                    callback(group_name, new_node_name)
+                except Exception:
+                    LOG.exception("The VM cluster group owner change "
+                                  "event listener encountered an "
+                                  "unexpected exception.")
+                    time.sleep(constants.DEFAULT_WMI_EVENT_TIMEOUT_MS / 1000)
+
+        return listener
+
 
 # At the moment, those event listeners are not meant to be used outside
 # os-win, mostly because of the underlying API limitations.
@@ -527,10 +633,12 @@ class _ClusterEventListener(object):
     _notif_port_h = None
     _cluster_handle = None
     _running = False
+    _stop_on_error = True
+    _error_sleep_interval = 2
 
-    def __init__(self, cluster_handle, notif_filters_list):
+    def __init__(self, cluster_handle, stop_on_error=True):
         self._cluster_handle = cluster_handle
-        self._notif_filters_list = notif_filters_list
+        self._stop_on_error = stop_on_error
 
         self._clusapi_utils = _clusapi_utils.ClusApiUtils()
         self._event_queue = queue.Queue()
@@ -607,9 +715,13 @@ class _ClusterEventListener(object):
             except Exception:
                 if self._running:
                     LOG.exception(
-                        "Unexpected exception in event listener loop. "
-                        "The cluster event listener will now close.")
-                    self._signal_stopped()
+                        "Unexpected exception in event listener loop.")
+                    if self._stop_on_error:
+                        LOG.warning(
+                            "The cluster event listener will now close.")
+                        self._signal_stopped()
+                    else:
+                        time.sleep(self._error_sleep_interval)
 
     def _process_event(self, event):
         return event
@@ -640,11 +752,11 @@ class _ClusterGroupStateChangeListener(_ClusterEventListener):
              filter_flags=w_const.CLUSTER_CHANGE_GROUP_COMMON_PROPERTY_V2,
              notif_key=_NOTIF_KEY_GROUP_COMMON_PROP)]
 
-    def __init__(self, cluster_handle, group_name=None):
+    def __init__(self, cluster_handle, group_name=None, **kwargs):
         self._group_name = group_name
 
         super(_ClusterGroupStateChangeListener, self).__init__(
-            cluster_handle, self._notif_filters_list)
+            cluster_handle, **kwargs)
 
     def _process_event(self, event):
         group_name = event['cluster_object_name']
@@ -674,3 +786,10 @@ class _ClusterGroupStateChangeListener(_ClusterEventListener):
                 # At the moment, we only care about the 'StatusInformation'
                 # common property.
                 pass
+
+
+class _ClusterGroupOwnerChangeListener(_ClusterEventListener):
+    _notif_filters_list = [
+        dict(object_type=w_const.CLUSTER_OBJECT_TYPE_GROUP,
+             filter_flags=w_const.CLUSTER_CHANGE_GROUP_OWNER_NODE_V2)
+    ]
