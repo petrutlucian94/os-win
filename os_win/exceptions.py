@@ -232,6 +232,10 @@ class ClusterException(OSWinException):
     pass
 
 
+class ClusterObjectNotFound(NotFound):
+    pass
+
+
 class ClusterWin32Exception(ClusterException, Win32Exception):
     pass
 

@@ -27,6 +27,18 @@ class NOTIFY_FILTER_AND_TYPE(ctypes.Structure):
     ]
 
 
+class CLUSTER_ENUM_ITEM(ctypes.Structure):
+    _fields_ = [
+        ('dwVersion', wintypes.DWORD),
+        ('dwType', wintypes.DWORD),
+        ('cbId', wintypes.DWORD),
+        ('lpszId', wintypes.LPWSTR),
+        ('cbName', wintypes.DWORD),
+        ('lpszName', wintypes.LPWSTR)
+    ]
+
+
+PCLUSTER_ENUM_ITEM = ctypes.POINTER(CLUSTER_ENUM_ITEM)
 PNOTIFY_FILTER_AND_TYPE = ctypes.POINTER(NOTIFY_FILTER_AND_TYPE)
 
 
@@ -49,8 +61,24 @@ def register():
     lib_handle.CloseClusterNode.argtypes = [wintypes.HANDLE]
     lib_handle.CloseClusterNode.restype = wintypes.BOOL
 
+    lib_handle.CloseClusterResource.argtypes = [wintypes.HANDLE]
+    lib_handle.CloseClusterResource.restype = wintypes.BOOL
+
     lib_handle.CloseClusterNotifyPort.argtypes = [wintypes.HANDLE]
     lib_handle.CloseClusterNotifyPort.restype = wintypes.BOOL
+
+    lib_handle.ClusterEnumEx.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.PVOID,
+        wintypes.LPDWORD
+    ]
+    lib_handle.ClusterEnumEx.restype = wintypes.DWORD
+
+    lib_handle.ClusterGetEnumCountEx.argtypes = [
+        wintypes.HANDLE,
+    ]
+    lib_handle.ClusterGetEnumCountEx.restype = wintypes.DWORD
 
     lib_handle.ClusterGroupControl.argtypes = [
         wintypes.HANDLE,
@@ -64,12 +92,26 @@ def register():
     ]
     lib_handle.ClusterGroupControl.restype = wintypes.DWORD
 
+    lib_handle.ClusterOpenEnumEx.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.PVOID
+    ]
+    lib_handle.ClusterOpenEnumEx.restype = wintypes.HANDLE
+
     lib_handle.GetClusterGroupState.argtypes = [
         wintypes.HANDLE,
         wintypes.LPWSTR,
         wintypes.PDWORD
     ]
     lib_handle.GetClusterGroupState.restype = wintypes.DWORD
+
+    lib_handle.GetClusterNodeId.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        wintypes.PDWORD
+    ]
+    lib_handle.GetClusterNodeId.restype = wintypes.DWORD
 
     lib_handle.CreateClusterNotifyPortV2.argtypes = [
         wintypes.HANDLE,
@@ -121,3 +163,9 @@ def register():
         wintypes.LPCWSTR
     ]
     lib_handle.OpenClusterNode.restype = wintypes.HANDLE
+
+    lib_handle.OpenClusterResource.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPCWSTR
+    ]
+    lib_handle.OpenClusterResource.restype = wintypes.HANDLE
