@@ -19,6 +19,8 @@ from os_win.utils.winapi import wintypes
 
 lib_handle = None
 
+CLUSGROUP_TYPE = wintypes.UINT
+
 
 class NOTIFY_FILTER_AND_TYPE(ctypes.Structure):
     _fields_ = [
@@ -37,9 +39,15 @@ class CLUSTER_ENUM_ITEM(ctypes.Structure):
         ('lpszName', wintypes.LPWSTR)
     ]
 
+class CLUSTER_CREATE_GROUP_INFO(ctypes.Structure):
+    _fields_ = [
+        ('dwVersion', wintypes.DWORD),
+        ('groupType', CLUSGROUP_TYPE)
+    ]
 
 PCLUSTER_ENUM_ITEM = ctypes.POINTER(CLUSTER_ENUM_ITEM)
 PNOTIFY_FILTER_AND_TYPE = ctypes.POINTER(NOTIFY_FILTER_AND_TYPE)
+PCLUSTER_CREATE_GROUP_INFO = ctypes.POINTER(CLUSTER_CREATE_GROUP_INFO)
 
 
 def register():
@@ -98,6 +106,13 @@ def register():
         wintypes.PVOID
     ]
     lib_handle.ClusterOpenEnumEx.restype = wintypes.HANDLE
+
+    lib_handle.CreateClusterGroupEx.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPCWSTR,
+        PCLUSTER_CREATE_GROUP_INFO
+    ]
+    lib_handle.CancelClusterGroupOperation.restype = wintypes.DWORD
 
     lib_handle.GetClusterGroupState.argtypes = [
         wintypes.HANDLE,

@@ -191,18 +191,29 @@ class ClusterUtils(baseutils.BaseUtils):
             move back to its original host when it is available again.
         """
         LOG.debug("Add vm to cluster called for vm %s" % vm_name)
-        self._cluster.AddVirtualMachine(vm_name)
 
-        vm_group = self._lookup_vm_group_check(vm_name)
-        vm_group.FailoverThreshold = max_failover_count
-        vm_group.FailoverPeriod = failover_period
-        vm_group.PersistentState = True
-        vm_group.AutoFailbackType = int(bool(auto_failback))
-        # set the earliest and latest time that the group can be moved
-        # back to its preferred node. The unit is in hours.
-        vm_group.FailbackWindowStart = self._FAILBACK_WINDOW_MIN
-        vm_group.FailbackWindowEnd = self._FAILBACK_WINDOW_MAX
-        vm_group.put()
+        group_info = clusapi_def.CLUSTER_CREATE_GROUP_INFO()
+        group_info.dwVersion = 1
+        group_info.groupType = w_const.ClusGroupTypeVirtualMachine
+
+        with self._open_cluster() as cluster_handle:
+            group_handle = self._clusapi_utils.create_cluster_group(
+                cluster_handle, vm_name, group_info)
+
+            try:
+                pass
+            finally:
+                self._clusapi_utils.close_cluster_group(group_handle)
+        # vm_group = self._lookup_vm_group_check(vm_name)
+        # vm_group.FailoverThreshold = max_failover_count
+        # vm_group.FailoverPeriod = failover_period
+        # vm_group.PersistentState = True
+        # vm_group.AutoFailbackType = int(bool(auto_failback))
+        # # set the earliest and latest time that the group can be moved
+        # # back to its preferred node. The unit is in hours.
+        # vm_group.FailbackWindowStart = self._FAILBACK_WINDOW_MIN
+        # vm_group.FailbackWindowEnd = self._FAILBACK_WINDOW_MAX
+        # vm_group.put()
 
     def bring_online(self, vm_name):
         with self._open_cluster_group(vm_name):

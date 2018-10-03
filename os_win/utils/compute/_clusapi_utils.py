@@ -233,6 +233,16 @@ class ClusApiUtils(object):
         return {'state': group_state,
                 'owner_node': node_name_buff.value}
 
+    def create_cluster_group(self, cluster_handle, group_name,
+                             group_info=None):
+        group_handle = self._run_and_check_output(
+            clusapi.CreateClusterGroupEx,
+            cluster_handle,
+            group_name,
+            ctypes.byref(group_info),
+            **self._open_handle_check_flags)
+        return group_handle
+
     def create_cluster_notify_port_v2(self, cluster_handle, notif_filters,
                                       notif_port_h=None, notif_key=None):
         """Creates or updates a cluster notify port.
